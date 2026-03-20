@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "bash scripts/winid-session-register.sh"
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash .cursor/hooks/cursor-stop-notify.sh",
+        "loop_limit": null
+      }
+    ]
+  }
+}

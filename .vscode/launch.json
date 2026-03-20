@@ -1,0 +1,40 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:agent-monitor}",
+            "name": "Debug NotifyPanel",
+            "program": "${workspaceFolder:agent-monitor}/.build/debug/NotifyPanel",
+            "preLaunchTask": "swift: Build Debug NotifyPanel"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:agent-monitor}",
+            "name": "Release NotifyPanel",
+            "program": "${workspaceFolder:agent-monitor}/.build/release/NotifyPanel",
+            "preLaunchTask": "swift: Build Release NotifyPanel"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:agent-monitor}",
+            "name": "Debug agm",
+            "program": "${workspaceFolder:agent-monitor}/.build/debug/agm",
+            "preLaunchTask": "swift: Build Debug agm"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:agent-monitor}",
+            "name": "Release agm",
+            "program": "${workspaceFolder:agent-monitor}/.build/release/agm",
+            "preLaunchTask": "swift: Build Release agm"
+        }
+    ]
+}
