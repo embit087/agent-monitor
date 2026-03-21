@@ -35,3 +35,7 @@ If the agent does not know the path: search the workspace or user tree for `inst
 ## Optional
 
 To **remove** only these hooks from `hooks.json`, edit the file and delete array elements whose `command` contains `winid-session-register.sh` or `cursor-stop-notify.sh` (or legacy `mailbox-winid-register.sh` / `cursor-stop-mailbox.sh`).
+
+## Duplicate notifications
+
+If each agent stop appears **twice** in Agent Monitor, two `stop` hooks are likely running (e.g. both `~/.cursor/hooks.json` and the workspace `.cursor/hooks.json`). Keep one source: either global hooks only (remove overlapping `stop` from the project file) or project hooks only (remove the duplicate from `~/.cursor/hooks.json`). The app also dedupes identical payloads within a few seconds as a safety net.

@@ -7,6 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/agm-env.sh"
 
 HOOK_JSON=""
 if [ ! -t 0 ]; then
@@ -30,7 +31,7 @@ if [[ "$IS_CURSOR" == "1" ]]; then
 fi
 
 if [[ -n "$HOOK_JSON" ]]; then
-  printf '%s' "$HOOK_JSON" | NOTIFY_MAILBOX_CONTEXT_MODE=final-response bash "$SCRIPT_DIR/notify-post.sh" "Claude Code" "Task completed" "Stop" >/dev/null 2>&1 || true
+  printf '%s' "$HOOK_JSON" | NOTIFY_MAILBOX_CONTEXT_MODE=final-response bash "$AGM_SCRIPTS/notify-post.sh" "Claude Code" "Task completed" "Stop" >/dev/null 2>&1 || true
 else
-  NOTIFY_MAILBOX_CONTEXT_MODE=final-response bash "$SCRIPT_DIR/notify-post.sh" "Claude Code" "Task completed" "Stop" >/dev/null 2>&1 || true
+  NOTIFY_MAILBOX_CONTEXT_MODE=final-response bash "$AGM_SCRIPTS/notify-post.sh" "Claude Code" "Task completed" "Stop" >/dev/null 2>&1 || true
 fi

@@ -10,21 +10,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TOOLS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DEFAULT_WINID="$TOOLS_DIR/winid"
+source "$SCRIPT_DIR/agm-env.sh"
 STORE_DIR="$HOME/.winids"
 
 winid_exe() {
-  if [[ -n "${WINID_SCRIPT:-}" && -x "$WINID_SCRIPT" ]]; then
-    echo "$WINID_SCRIPT"
+  if [[ -n "${AGM_WINID:-}" && -x "$AGM_WINID" ]]; then
+    echo "$AGM_WINID"
     return 0
   fi
   if command -v winid &>/dev/null; then
     command -v winid
-    return 0
-  fi
-  if [[ -x "$DEFAULT_WINID" ]]; then
-    echo "$DEFAULT_WINID"
     return 0
   fi
   return 1

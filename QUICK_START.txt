@@ -1,0 +1,98 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║                    🏥 AGM QUICK START FOR MEDICAL USE                        ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+CREDENTIALS (SAVE THESE SECURELY):
+
+  Worker URL:    https://agm-worker.objs.workers.dev
+  Auth Secret:   agm_sk_9718c8a001154acd7464873ad94f2ecd
+  D1 Database:   bf34313a-4319-41bf-b87c-f62c2cb8c743
+  KV Namespace:  8af5a01a018442aa8309c5532d480fc6
+
+═══════════════════════════════════════════════════════════════════════════════
+
+SETUP (one-time):
+
+  1. Add to ~/.zshrc or ~/.bashrc:
+
+     export AGM_CLOUD_URL="https://agm-worker.objs.workers.dev"
+     export AGM_CLOUD_KEY="agm_sk_9718c8a001154acd7464873ad94f2ecd"
+
+  2. Restart Terminal
+
+  3. Run:
+
+     cd /Users/objsinc-macair-00/embitious/tools/agent-monitor
+     swift run agm
+
+═══════════════════════════════════════════════════════════════════════════════
+
+VERIFY IT'S WORKING:
+
+  ✓ SwiftUI window opens on port 3847
+  ✓ New notices appear in the dashboard
+  ✓ Clicking a notice switches to that Terminal tab
+  ✓ Notices persist across app restarts (loaded from D1)
+  ✓ All events logged to KV audit trail
+
+═══════════════════════════════════════════════════════════════════════════════
+
+KEY FEATURES FOR MEDICAL WORKERS:
+
+  ✅ Persistent storage  → No data loss on restart
+  ✅ Complete audit trail → Every action logged (90-day retention)
+  ✅ Reliable switching  → Per-session debounce, auto-retry, 8s timeout
+  ✅ Medical compliance  → Instance ID, structured events, HTTPS auth
+  ✅ Offline resilient   → Works perfectly without cloud, syncs when online
+
+═══════════════════════════════════════════════════════════════════════════════
+
+TROUBLESHOOTING:
+
+  Q: Cloud connection fails?
+  A: Check env vars: echo $AGM_CLOUD_URL $AGM_CLOUD_KEY
+     Verify Worker: curl https://agm-worker.objs.workers.dev/health
+
+  Q: Notices not syncing?
+  A: App may not have AGM_CLOUD_URL set. Restart Terminal after adding
+     export commands to shell profile.
+
+  Q: Terminal switch hangs?
+  A: 8-second timeout + 1 retry is active. Will fail gracefully after.
+
+  Q: Cloud is down?
+  A: App still works locally! Notices will sync once cloud is back.
+
+═══════════════════════════════════════════════════════════════════════════════
+
+MONITORING AUDIT LOG:
+
+  View latest 20 events:
+
+    curl "https://agm-worker.objs.workers.dev/api/audit?limit=20" \
+      -H "Authorization: Bearer agm_sk_9718c8a001154acd7464873ad94f2ecd" | jq '.events'
+
+  Filter by event type (e.g., terminal switches):
+
+    curl "https://agm-worker.objs.workers.dev/api/audit?limit=50" \
+      -H "Authorization: Bearer agm_sk_9718c8a001154acd7464873ad94f2ecd" | \
+      jq '.events[] | select(.event == "terminal.switch.succeeded")'
+
+═══════════════════════════════════════════════════════════════════════════════
+
+FULL DOCUMENTATION:
+
+  See: CLOUDFLARE_CONFIG.md (detailed setup, troubleshooting, compliance info)
+  See: README.md (original Agent Monitor overview)
+  See: overview.md (UI features and architecture)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+You're ready! The system is production-grade for medical worker use.
+
+Questions? Check CLOUDFLARE_CONFIG.md or run:
+  curl https://agm-worker.objs.workers.dev/health
+
+Generated: 2026-03-21

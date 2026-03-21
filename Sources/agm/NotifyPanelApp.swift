@@ -22,28 +22,51 @@ private enum AppActivationSupport {
 
 @main
 struct NotifyPanelApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var model = PanelModel()
+    @StateObject private var notepadModel = NotepadModel()
+    @StateObject private var projectModel = ProjectGroupModel()
 
     init() {
         AppActivationSupport.prepareForInteractiveUse()
     }
 
     var body: some Scene {
-        WindowGroup("Agent Monitor") {
+        WindowGroup {
             ContentView()
                 .environmentObject(model)
+                .environmentObject(notepadModel)
+                .environmentObject(projectModel)
                 .onAppear {
                     AppActivationSupport.activateWindowIfNeeded()
                     // UNUserNotificationCenter must run after the app is up on the main run loop
                     // (calling it from App.init() raises NSException on some macOS versions).
                     SystemNotificationSupport.shared.configure()
-                    model.startServerIfNeeded()
+                    model.startServerIfNeeded(notepad: notepadModel)
+                    // Background history hydration — non-blocking, merges cloud history into local state
+                    Task {
+                        let history = await model.cloudSync.loadHistory()
+                        if !history.isEmpty {
+                            await MainActor.run { model.hydrateFromCloud(history) }
+                        }
+                    }
+                    // Audit app.started
+                    Task.detached(priority: .utility) {
+                        await model.cloudSync.auditAppStarted()
+                    }
                 }
         }
         .windowStyle(.automatic)
+        .windowToolbarStyle(.unified)
         .defaultSize(width: 560, height: 640)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+
+        Window("Notepad", id: "notepad") {
+            NotepadView()
+                .environmentObject(notepadModel)
+        }
+        .defaultSize(width: 800, height: 600)
     }
 }

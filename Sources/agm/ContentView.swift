@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MarkdownUI
 import SwiftUI
 
 private enum PanelLayout {
@@ -13,7 +14,6 @@ private enum PanelLayout {
 }
 
 private enum NoticeTitleFilter: String, CaseIterable, Identifiable {
-    case all = "All"
     case cursor = "Cursor"
     case claudeCode = "Claude Code"
     case terminal = "Terminal"
@@ -68,33 +68,58 @@ private struct AgentSessionTab: Identifiable, Hashable {
 
 struct ContentView: View {
     @EnvironmentObject private var model: PanelModel
+    @EnvironmentObject private var notepad: NotepadModel
+    @EnvironmentObject private var projects: ProjectGroupModel
+    @Environment(\.openWindow) private var openWindow
     @State private var showClearConfirmation = false
-    @State private var titleFilter: NoticeTitleFilter = .all
+    @State private var titleFilter: NoticeTitleFilter?
     @State private var selectedAgentSessionId: String?
     @State private var manualTerminalWinid = ""
+    @State private var initTerminalAutoMode = false
     @State private var hideResponses = false
+    @State private var sessionPendingClose: AgentSessionTab?
+    @State private var newProjectName = ""
+    @State private var editingProjectId: UUID?
+    @State private var editingProjectName = ""
+    @State private var dropTargetGroupId: UUID?
+    @State private var showPreviewPopover = false
+    @State private var showTypeFilters = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            projectBar
             filterBar
             terminalWinidEntryBar
             agentSessionTabBar
+            switchStatusBar
             if let err = model.lastError {
                 errorBanner(err)
             }
-            listSection
+            agentCardList
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .frame(minWidth: 480, minHeight: 520)
-        .background(backgroundGradient)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: titleFilter) { _, _ in
             selectedAgentSessionId = nil
+            showPreviewPopover = false
+            model.clearPreview()
+        }
+        .onChange(of: projects.selectedGroupId) { _, _ in
+            selectedAgentSessionId = nil
+            showPreviewPopover = false
+            model.clearPreview()
         }
         .onChange(of: agentSessionTabSignature) { _, _ in
             if let s = selectedAgentSessionId,
-               !Set(filteredItems.compactMap { Self.normalizedSessionId($0.action) }).contains(s) {
+               !Set(titleFilteredItems.compactMap { Self.normalizedSessionId($0.action) }).contains(s) {
                 selectedAgentSessionId = nil
+                showPreviewPopover = false
+                model.clearPreview()
             }
+        }
+        .onChange(of: notepad.openTrigger) { _, _ in
+            openWindow(id: "notepad")
         }
         .alert("Clear all notifications?", isPresented: $showClearConfirmation) {
             Button("Cancel", role: .cancel) {}
@@ -104,6 +129,38 @@ struct ContentView: View {
         } message: {
             Text("All items will be removed from the list. This can’t be undone.")
         }
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                titleBarTitleRow
+                    .padding(.horizontal, 8)
+            }
+        }
+    }
+
+    /// Unified titlebar: app name, status dot, and version — clean inline layout.
+    private var titleBarTitleRow: some View {
+        HStack(alignment: .center, spacing: 5) {
+            Spacer()
+
+            titleBarStatusDot
+
+            Text(AppVersion.string)
+                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                .foregroundStyle(.quaternary)
+        }
+        .padding(.vertical, 2)
+        .help(model.serverRunning ? "Server is ready" : "Starting…")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("agm, \(model.serverRunning ? "ready" : "starting"), version \(AppVersion.string)")
+    }
+
+    private var titleBarStatusDot: some View {
+        Circle()
+            .fill(model.serverRunning ? Color.mint : Color.orange.opacity(0.92))
+            .frame(width: 5, height: 5)
+            .shadow(color: (model.serverRunning ? Color.mint : Color.orange).opacity(0.3), radius: 1.5, y: 0.5)
+            .animation(.easeInOut(duration: 0.22), value: model.serverRunning)
+            .accessibilityHidden(true)
     }
 
     private var backgroundGradient: some View {
@@ -120,16 +177,227 @@ struct ContentView: View {
         }
     }
 
-    /// Main title filters row with status dot and clear button on the right.
-    private var filterBar: some View {
-        HStack(alignment: .center, spacing: 6) {
-            ForEach(NoticeTitleFilter.allCases) { option in
-                filterChip(for: option)
+    // MARK: - Project Bar
+
+    private var projectBar: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        // Session type filter toggle
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showTypeFilters.toggle()
+                                if !showTypeFilters {
+                                    titleFilter = nil
+                                }
+                            }
+                        } label: {
+                            Image(systemName: showTypeFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(showTypeFilters ? Color.primary : Color.secondary.opacity(0.7))
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .help(showTypeFilters ? "Hide session type filters" : "Show session type filters")
+                        .accessibilityLabel(showTypeFilters ? "Collapse filters" : "Expand filters")
+
+                        // "All Projects" chip
+                        projectChip(name: "All", color: .secondary, isSelected: projects.selectedGroupId == nil) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                projects.selectedGroupId = nil
+                            }
+                        }
+
+                        ForEach(projects.groups) { group in
+                            let isSelected = projects.selectedGroupId == group.id
+                            let isDropTarget = dropTargetGroupId == group.id
+                            projectChip(
+                                name: group.name,
+                                color: group.color,
+                                isSelected: isSelected,
+                                count: activeSessionCount(for: group)
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    projects.selectedGroupId = isSelected ? nil : group.id
+                                }
+                            }
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(group.color, lineWidth: isDropTarget ? 2 : 0)
+                                    .animation(.easeInOut(duration: 0.12), value: isDropTarget)
+                            )
+                            .scaleEffect(isDropTarget ? 1.08 : 1.0)
+                            .animation(.easeInOut(duration: 0.12), value: isDropTarget)
+                            .dropDestination(for: String.self) { sessionKeys, _ in
+                                for key in sessionKeys {
+                                    projects.addSession(key, to: group.id)
+                                }
+                                return !sessionKeys.isEmpty
+                            } isTargeted: { targeted in
+                                dropTargetGroupId = targeted ? group.id : nil
+                            }
+                            .contextMenu { projectContextMenu(for: group) }
+                        }
+                    }
+                    .padding(.horizontal, PanelLayout.windowPaddingH)
+                    .padding(.vertical, 5)
+                }
+
+                // Create new project
+                if projects.isCreatingGroup {
+                    HStack(spacing: 4) {
+                        TextField("Name", text: $newProjectName)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                            .frame(width: 100)
+                            .onSubmit { commitNewProject() }
+
+                        Button {
+                            commitNewProject()
+                        } label: {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(newProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        Button {
+                            projects.isCreatingGroup = false
+                            newProjectName = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.trailing, 8)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                } else {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            projects.isCreatingGroup = true
+                        }
+                    } label: {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary.opacity(0.7))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help("New project group")
+                }
+
+                actionButtons
+                    .padding(.trailing, 8)
             }
+            Divider().opacity(0.5)
+        }
+        .background(.bar.opacity(0.6))
+        // Inline rename alert
+        .alert("Rename Project", isPresented: Binding(
+            get: { editingProjectId != nil },
+            set: { if !$0 { editingProjectId = nil } }
+        )) {
+            TextField("Project name", text: $editingProjectName)
+            Button("Cancel", role: .cancel) { editingProjectId = nil }
+            Button("Rename") {
+                if let id = editingProjectId {
+                    projects.renameGroup(id: id, name: editingProjectName)
+                }
+                editingProjectId = nil
+            }
+        } message: {
+            Text("Enter a new name for the project.")
+        }
+    }
 
-            Spacer(minLength: 8)
+    private func projectChip(name: String, color: Color, isSelected: Bool, count: Int? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 7, height: 7)
+                Text(name)
+                    .font(.caption.weight(isSelected ? .bold : .medium))
+                    .lineLimit(1)
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(isSelected ? color : .secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(color.opacity(isSelected ? 0.18 : 0.08)))
+                }
+            }
+            .foregroundStyle(isSelected ? .primary : .secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(isSelected ? color.opacity(0.14) : Color.primary.opacity(0.04))
+            )
+        }
+        .buttonStyle(.plain)
+        .contentShape(Capsule())
+    }
 
-            statusDot
+    @ViewBuilder
+    private func projectContextMenu(for group: ProjectGroup) -> some View {
+        Button {
+            editingProjectName = group.name
+            editingProjectId = group.id
+        } label: {
+            Label("Rename", systemImage: "pencil")
+        }
+
+        Menu("Color") {
+            ForEach(ProjectGroupModel.huePresets, id: \.1) { name, hue in
+                Button {
+                    projects.setGroupColor(id: group.id, hue: hue)
+                } label: {
+                    Label(name, systemImage: group.colorHue == hue ? "checkmark.circle.fill" : "circle.fill")
+                }
+            }
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            projects.deleteGroup(id: group.id)
+        } label: {
+            Label("Delete Project", systemImage: "trash")
+        }
+    }
+
+    private func commitNewProject() {
+        let name = newProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        projects.createGroup(name: name)
+        newProjectName = ""
+        projects.isCreatingGroup = false
+    }
+
+    /// Main title filters row with actions on the right.
+    private var actionButtons: some View {
+        HStack(spacing: 2) {
+            Button {
+                if notepad.pads.isEmpty {
+                    notepad.openNewPad()
+                }
+                openWindow(id: "notepad")
+            } label: {
+                Image(systemName: "note.text")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.7))
+                    .frame(minWidth: 24, minHeight: 24)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .help("Open notepad")
+            .accessibilityLabel("Open notepad")
 
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) {
@@ -158,6 +426,18 @@ struct ContentView: View {
             .keyboardShortcut(.delete, modifiers: [.command])
             .help("Clear all notifications")
             .accessibilityLabel("Clear all notifications")
+        }
+    }
+
+    private var filterBar: some View {
+        HStack(alignment: .center, spacing: 6) {
+            if showTypeFilters {
+                ForEach(NoticeTitleFilter.allCases) { option in
+                    filterChip(for: option)
+                }
+            } else if !agentSessionTabs.isEmpty {
+                inlineSessionTabs
+            }
         }
         .padding(.horizontal, PanelLayout.windowPaddingH)
         .padding(.top, PanelLayout.windowPaddingTop)
@@ -202,6 +482,55 @@ struct ContentView: View {
                         .disabled(trimmedManualTerminalWinid.isEmpty)
                         .fixedSize(horizontal: true, vertical: false)
                     }
+
+                    Divider()
+                        .opacity(0.5)
+
+                    HStack(alignment: .center, spacing: 8) {
+                        Label("New Terminal", systemImage: "plus.rectangle.on.rectangle")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+
+                        Toggle("Auto", isOn: $initTerminalAutoMode)
+                            .toggleStyle(.checkbox)
+                            .font(.caption)
+                            .help("Auto-accept: claude uses --dangerously-skip-permissions, cursor uses --force.")
+
+                        Spacer()
+
+                        Button {
+                            Task { await model.initNewTerminal() }
+                        } label: {
+                            Label("Terminal", systemImage: "terminal")
+                        }
+                        .help("Open a plain Terminal window.")
+
+                        Button {
+                            let cmd = initTerminalAutoMode
+                                ? "claude --dangerously-skip-permissions"
+                                : "claude"
+                            Task { await model.initNewTerminal(chainCommand: cmd) }
+                        } label: {
+                            Label("Claude Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                        }
+                        .help(initTerminalAutoMode
+                            ? "Open Terminal and start Claude Code with --dangerously-skip-permissions."
+                            : "Open Terminal and start a Claude Code session.")
+
+                        Button {
+                            let cmd = initTerminalAutoMode
+                                ? "cursor agent --force"
+                                : "cursor agent"
+                            Task { await model.initNewTerminal(chainCommand: cmd) }
+                        } label: {
+                            Label("Cursor Agent", systemImage: "cursorarrow.rays")
+                        }
+                        .help(initTerminalAutoMode
+                            ? "Open Terminal and start Cursor agent with --force."
+                            : "Open Terminal and start a Cursor agent session.")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
                 .padding(.vertical, 8)
                 .padding(.horizontal, PanelLayout.cardPadding)
@@ -221,44 +550,78 @@ struct ContentView: View {
         }
     }
 
-    /// Agent/session switch tabs row.
+    /// Session tab capsules — reused inline (collapsed) and standalone (expanded).
+    private var sessionTabsContent: some View {
+        ForEach(agentSessionTabs) { tab in
+            let isSelected = selectedAgentSessionId == tab.sessionKey
+            let color = tab.sourceKind.tintColor
+            HStack(spacing: 0) {
+                Button {
+                    selectedAgentSessionId = tab.sessionKey
+                    model.openWinidSession(tab.openAction)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: tab.sourceKind.iconName)
+                            .font(.caption2)
+                        Text("#\(tab.index)")
+                            .font(.caption2.weight(.semibold))
+                            .monospacedDigit()
+                        Text(tab.label)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                        sessionProjectDots(for: tab.sessionKey)
+                    }
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Switch agent — focus Terminal for this target.")
+                .accessibilityLabel("Switch agent #\(tab.index): \(tab.label)")
+
+                Button {
+                    sessionPendingClose = tab
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.secondary.opacity(0.6))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Close session — remove from monitor")
+                .accessibilityLabel("Close session #\(tab.index)")
+            }
+            .padding(.leading, 7)
+            .padding(.trailing, 3)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(isSelected ? color.opacity(0.14) : Color.primary.opacity(0.04))
+            )
+            .contentShape(Capsule())
+            .opacity(sessionTabOpacity(tab: tab, isSelected: isSelected))
+            .animation(.easeInOut(duration: 0.15), value: isSelected)
+            .draggable(tab.sessionKey)
+            .contextMenu { sessionProjectMenu(for: tab) }
+        }
+    }
+
+    /// Inline session tabs shown in the filter bar when type filters are collapsed.
+    private var inlineSessionTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .center, spacing: 8) {
+                sessionTabsContent
+            }
+            .animation(.easeInOut(duration: 0.12), value: selectedAgentSessionId)
+        }
+    }
+
+    /// Agent/session switch tabs row — only shown when type filters are expanded.
     private var agentSessionTabBar: some View {
         Group {
-            if !agentSessionTabs.isEmpty {
+            if showTypeFilters && !agentSessionTabs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .center, spacing: 8) {
-                        ForEach(agentSessionTabs) { tab in
-                            let isSelected = selectedAgentSessionId == tab.sessionKey
-                            let color = tab.sourceKind.tintColor
-                            Button {
-                                selectedAgentSessionId = tab.sessionKey
-                                model.openWinidSession(tab.openAction)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: tab.sourceKind.iconName)
-                                        .font(.caption2)
-                                    Text("#\(tab.index)")
-                                        .font(.caption2.weight(.semibold))
-                                        .monospacedDigit()
-                                    Text(tab.label)
-                                        .font(.caption.weight(.medium))
-                                        .lineLimit(1)
-                                }
-                                .foregroundStyle(isSelected ? .primary : .secondary)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(
-                                    Capsule()
-                                        .fill(isSelected ? color.opacity(0.14) : Color.primary.opacity(0.04))
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .opacity(selectedAgentSessionId == nil || isSelected ? 1.0 : 0.6)
-                            .animation(.easeInOut(duration: 0.15), value: isSelected)
-                            .help("Switch agent — focus Terminal for this target.")
-                            .accessibilityLabel("Switch agent #\(tab.index): \(tab.label)")
-                            .contentShape(Capsule())
-                        }
+                        sessionTabsContent
                     }
                     .animation(.easeInOut(duration: 0.12), value: selectedAgentSessionId)
                     .padding(.vertical, 2)
@@ -268,6 +631,88 @@ struct ContentView: View {
                 .padding(.bottom, 4)
             }
         }
+        .alert("Close this session?", isPresented: Binding(
+            get: { sessionPendingClose != nil },
+            set: { if !$0 { sessionPendingClose = nil } }
+        )) {
+            Button("Cancel", role: .cancel) {
+                sessionPendingClose = nil
+            }
+            Button("Close", role: .destructive) {
+                if let tab = sessionPendingClose {
+                    if selectedAgentSessionId == tab.sessionKey {
+                        selectedAgentSessionId = nil
+                    }
+                    model.closeWinidSession(tab.openAction)
+                }
+                sessionPendingClose = nil
+            }
+        } message: {
+            if let tab = sessionPendingClose {
+                Text("All notifications for session #\(tab.index) (\(tab.label)) will be removed and its WINID unregistered.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var switchStatusBar: some View {
+        switch model.switchStatus {
+        case .idle:
+            EmptyView()
+        case .switching(let id):
+            switchStatusLabel(
+                icon: "arrow.triangle.2.circlepath",
+                text: "Switching to \(id)…",
+                color: .secondary,
+                spinning: true
+            )
+        case .succeeded(let id):
+            switchStatusLabel(
+                icon: "checkmark.circle.fill",
+                text: "Switched to \(id)",
+                color: .green,
+                spinning: false
+            )
+        case .failed(let msg):
+            switchStatusLabel(
+                icon: "exclamationmark.triangle.fill",
+                text: msg,
+                color: .orange,
+                spinning: false
+            )
+        }
+    }
+
+    private func switchStatusLabel(icon: String, text: String, color: Color, spinning: Bool) -> some View {
+        HStack(spacing: 5) {
+            if spinning {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.7)
+            } else {
+                Image(systemName: icon)
+                    .font(.caption2)
+                    .foregroundStyle(color)
+            }
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, PanelLayout.windowPaddingH)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .transition(.opacity)
+        .animation(.easeInOut(duration: 0.2), value: model.switchStatus)
+    }
+
+
+    private static func shortSessionId(_ id: String) -> String {
+        if id.count > 14 {
+            return String(id.prefix(8)) + "\u{2026}" + String(id.suffix(4))
+        }
+        return id
     }
 
     private func filterChip(for option: NoticeTitleFilter) -> some View {
@@ -275,7 +720,6 @@ struct ContentView: View {
         let count = distinctSessionCount(for: option)
         let chipColor: Color = {
             switch option {
-            case .all: return .mint
             case .cursor: return .purple
             case .claudeCode: return .mint
             case .terminal: return .orange
@@ -284,7 +728,7 @@ struct ContentView: View {
 
         return Button {
             withAnimation(.easeInOut(duration: 0.15)) {
-                titleFilter = option
+                titleFilter = isActive ? nil : option
             }
         } label: {
             HStack(spacing: 5) {
@@ -315,15 +759,30 @@ struct ContentView: View {
         .accessibilityLabel("\(option.rawValue) filter, \(count) sessions")
     }
 
-    private func distinctSessionCount(for filter: NoticeTitleFilter) -> Int {
-        let items = model.items.filter { Self.matchesTitleFilter($0, filter) }
+    /// Count only sessions assigned to this project that still have agent cards in the current items.
+    private func activeSessionCount(for group: ProjectGroup) -> Int {
+        let currentSessionKeys = Set(model.items.compactMap { Self.normalizedSessionId($0.action) })
+        return group.sessionKeys.filter { currentSessionKeys.contains($0) }.count
+    }
+
+    private func distinctSessionCount(for filter: NoticeTitleFilter?) -> Int {
+        let items = model.items.filter { notice in
+            Self.matchesTitleFilter(notice, filter) && projects.matchesSelectedProject(notice)
+        }
         let ids = items.compactMap { Self.normalizedSessionId($0.action) }
         return Set(ids).count
     }
 
+    /// Items filtered by title only (no project filter) — used for session tabs so they're always visible for drag-and-drop.
+    private var titleFilteredItems: [Notice] {
+        model.items.filter { Self.matchesTitleFilter($0, titleFilter) }
+    }
+
+    /// Session tabs built from title-filtered items (ignoring project filter) so all sessions
+    /// remain visible and draggable even when a project is selected.
     private var agentSessionTabs: [AgentSessionTab] {
         var latest: [String: Notice] = [:]
-        for n in filteredItems {
+        for n in titleFilteredItems {
             guard let sid = Self.normalizedSessionId(n.action) else { continue }
             if let ex = latest[sid] {
                 if n.at > ex.at { latest[sid] = n }
@@ -354,7 +813,7 @@ struct ContentView: View {
 
     /// Changes when filtered rows or their sessions change so tab selection can be validated.
     private var agentSessionTabSignature: String {
-        let parts = filteredItems.map { row -> String in
+        let parts = titleFilteredItems.map { row -> String in
             let sid = Self.normalizedSessionId(row.action) ?? "-"
             return "\(sid):\(row.id.uuidString):\(row.at.timeIntervalSince1970)"
         }
@@ -373,7 +832,9 @@ struct ContentView: View {
     }
 
     private var filteredItems: [Notice] {
-        model.items.filter { Self.matchesTitleFilter($0, titleFilter) }
+        model.items.filter { notice in
+            Self.matchesTitleFilter(notice, titleFilter) && projects.matchesSelectedProject(notice)
+        }
     }
 
     private static func normalizedSessionId(_ action: String?) -> String? {
@@ -381,10 +842,9 @@ struct ContentView: View {
         return a
     }
 
-    private static func matchesTitleFilter(_ notice: Notice, _ filter: NoticeTitleFilter) -> Bool {
+    private static func matchesTitleFilter(_ notice: Notice, _ filter: NoticeTitleFilter?) -> Bool {
+        guard let filter else { return true }
         switch filter {
-        case .all:
-            return true
         case .cursor:
             return titleMatchesCursor(notice.title)
         case .claudeCode:
@@ -419,6 +879,57 @@ struct ContentView: View {
         }
     }
 
+    /// Dims session tabs that don't belong to the selected project, helping the user see which ones to drag.
+    private func sessionTabOpacity(tab: AgentSessionTab, isSelected: Bool) -> Double {
+        if selectedAgentSessionId != nil && !isSelected { return 0.6 }
+        guard let group = projects.selectedGroup else { return 1.0 }
+        return group.sessionKeys.contains(tab.sessionKey) ? 1.0 : 0.5
+    }
+
+    @ViewBuilder
+    private func sessionProjectMenu(for tab: AgentSessionTab) -> some View {
+        if !projects.groups.isEmpty {
+            Menu("Assign to Project") {
+                ForEach(projects.groups) { group in
+                    let isMember = group.sessionKeys.contains(tab.sessionKey)
+                    Button {
+                        projects.toggleSession(tab.sessionKey, in: group.id)
+                    } label: {
+                        Label(group.name, systemImage: isMember ? "checkmark.circle.fill" : "circle")
+                    }
+                }
+            }
+
+            let memberGroups = projects.groupsContaining(session: tab.sessionKey)
+            if !memberGroups.isEmpty {
+                Menu("Remove from Project") {
+                    ForEach(memberGroups) { group in
+                        Button {
+                            projects.removeSession(tab.sessionKey, from: group.id)
+                        } label: {
+                            Label(group.name, systemImage: "minus.circle")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Small colored dots next to session tabs showing which projects they belong to.
+    @ViewBuilder
+    private func sessionProjectDots(for sessionKey: String) -> some View {
+        let memberGroups = projects.groupsContaining(session: sessionKey)
+        if !memberGroups.isEmpty {
+            HStack(spacing: 1) {
+                ForEach(memberGroups.prefix(3)) { group in
+                    Circle()
+                        .fill(group.color)
+                        .frame(width: 5, height: 5)
+                }
+            }
+        }
+    }
+
     private var subtitleLine: String {
         model.serverRunning
             ? "Hook and API events show up here as they arrive."
@@ -446,19 +957,19 @@ struct ContentView: View {
         .padding(.bottom, 4)
     }
 
-    private var listSection: some View {
+    private var agentCardList: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: PanelLayout.listRowGap) {
                     if filteredItems.isEmpty {
-                        if titleFilter == .all && model.items.isEmpty {
+                        if titleFilter == nil && projects.selectedGroupId == nil && model.items.isEmpty {
                             emptyState
                         } else {
                             filterEmptyState
                         }
                     } else {
                         ForEach(filteredItems) { item in
-                            NoticeRow(notice: item, selectedSessionId: selectedAgentSessionId, hideResponse: hideResponses)
+                            AgentCard(notice: item, selectedSessionId: selectedAgentSessionId, hideResponse: hideResponses, showPreviewPopover: $showPreviewPopover)
                         }
                     }
                 }
@@ -519,8 +1030,11 @@ struct ContentView: View {
     }
 
     private var filterEmptyTitle: String {
+        if projects.selectedGroupId != nil && titleFilter == nil {
+            return "No sessions in this project"
+        }
         switch titleFilter {
-        case .all: return ""
+        case .none: return ""
         case .cursor: return "No Cursor titles"
         case .claudeCode: return "No Claude Code titles"
         case .terminal: return "No Terminal switch targets"
@@ -528,8 +1042,11 @@ struct ContentView: View {
     }
 
     private var filterEmptySubtitle: String {
+        if let group = projects.selectedGroup, titleFilter == nil {
+            return "Drag session tabs onto the \"\(group.name)\" project chip above to assign them."
+        }
         switch titleFilter {
-        case .all: return ""
+        case .none: return ""
         case .cursor:
             return "No row’s title contains Cursor. Choose All or Claude Code, or wait for new events."
         case .claudeCode:
@@ -537,15 +1054,6 @@ struct ContentView: View {
         case .terminal:
             return "Add a WINID above to create a manual Terminal switch trigger."
         }
-    }
-
-    private var statusDot: some View {
-        Circle()
-            .fill(model.serverRunning ? Color.mint : Color.orange.opacity(0.9))
-            .frame(width: 7, height: 7)
-            .shadow(color: (model.serverRunning ? Color.mint : Color.orange).opacity(0.45), radius: 2)
-            .accessibilityLabel(model.serverRunning ? "Ready" : "Starting")
-            .help(model.serverRunning ? "Server is ready" : "Starting…")
     }
 }
 
@@ -608,11 +1116,112 @@ private struct ManualWinidTextField: NSViewRepresentable {
     }
 }
 
-private struct NoticeRow: View {
+// MARK: - MarkdownUI Theme
+
+extension MarkdownUI.Theme {
+    static let agmPanel = Theme()
+        .text {
+            FontSize(13)
+            ForegroundColor(.primary)
+        }
+        .heading1 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.bold)
+                    FontSize(16)
+                }
+                .markdownMargin(top: 8, bottom: 4)
+        }
+        .heading2 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.semibold)
+                    FontSize(14)
+                }
+                .markdownMargin(top: 6, bottom: 3)
+        }
+        .heading3 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.semibold)
+                    FontSize(13)
+                }
+                .markdownMargin(top: 4, bottom: 2)
+        }
+        .codeBlock { configuration in
+            ScrollView(.horizontal) {
+                configuration.label
+                    .markdownTextStyle {
+                        FontFamilyVariant(.monospaced)
+                        FontSize(11.5)
+                    }
+            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            )
+            .markdownMargin(top: 4, bottom: 4)
+        }
+        .code {
+            FontFamilyVariant(.monospaced)
+            FontSize(12)
+            BackgroundColor(.primary.opacity(0.06))
+        }
+        .blockquote { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    ForegroundColor(.secondary)
+                    FontSize(12.5)
+                }
+                .padding(.leading, 10)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.3))
+                        .frame(width: 3)
+                }
+                .markdownMargin(top: 4, bottom: 4)
+        }
+        .listItem { configuration in
+            configuration.label
+                .markdownMargin(top: 2, bottom: 2)
+        }
+        .paragraph { configuration in
+            configuration.label
+                .markdownMargin(top: 2, bottom: 2)
+        }
+}
+
+private struct CopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            withAnimation(.easeInOut(duration: 0.15)) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(.easeInOut(duration: 0.15)) { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(copied ? .green : .secondary.opacity(0.6))
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Copy to clipboard")
+    }
+}
+
+private struct AgentCard: View {
     @EnvironmentObject private var model: PanelModel
     let notice: Notice
     let selectedSessionId: String?
     var hideResponse: Bool = false
+    @Binding var showPreviewPopover: Bool
 
     private var isCurrentAgent: Bool {
         guard let selected = selectedSessionId,
@@ -629,21 +1238,42 @@ private struct NoticeRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
+                if switchAction != nil {
+                    Button {
+                        if let action = switchAction {
+                            model.openWinidSession(action)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.right.square")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if let action = switchAction {
-                    Text(action)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(action, forType: .string)
+                    } label: {
+                        Text(String(action.prefix(8)))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy session ID")
                 }
 
                 Spacer(minLength: 4)
 
+                if isCurrentAgent {
+                    cardPreview
+                }
+            }
+
                 Text(Self.format(notice.at))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.quaternary)
-            }
 
             if let s = Self.displayableSource(notice.source) {
                 Text(s)
@@ -664,11 +1294,16 @@ private struct NoticeRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(8)
+                        .padding(.trailing, 16)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(Color.primary.opacity(0.035))
                         )
+                        .overlay(alignment: .topTrailing) {
+                            CopyButton(text: request)
+                                .padding(4)
+                        }
                 }
             } else {
                 if let request = requestText {
@@ -679,8 +1314,13 @@ private struct NoticeRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(6)
+                        .padding(.trailing, 16)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(alignment: .topTrailing) {
+                            CopyButton(text: request)
+                                .padding(2)
+                        }
                 }
 
                 responseSection
@@ -700,11 +1340,89 @@ private struct NoticeRow: View {
         )
         .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
         .contentShape(RoundedRectangle(cornerRadius: PanelLayout.cardCorner, style: .continuous))
-        .onTapGesture {
-            guard let action = switchAction else { return }
-            model.openWinidSession(action)
+    }
+
+    @ViewBuilder
+    private var cardPreview: some View {
+        switch model.previewStatus {
+        case .idle:
+            EmptyView()
+        case .loading:
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.7)
+        case .loaded(_):
+            if let image = model.previewImage {
+                Button {
+                    showPreviewPopover.toggle()
+                } label: {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 32, height: 20)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Show window preview")
+                .popover(isPresented: $showPreviewPopover, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Window Preview")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                if let action = switchAction {
+                                    model.captureWindowPreview(sessionId: action)
+                                }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Refresh preview")
+                        }
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: 420, maxHeight: 300)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+                            )
+                            .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
+                    }
+                    .padding(10)
+                }
+
+                Button {
+                    showPreviewPopover = false
+                    model.clearPreview()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss preview")
+            }
+        case .notFound(_):
+            Image(systemName: "eye.slash")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .help("Window not found")
+        case .permissionNeeded:
+            Image(systemName: "lock.shield")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .help("Screen Recording permission required")
         }
-        .help(switchAction == nil ? "" : "Click the card to switch agent and focus Terminal.")
     }
 
     /// Hook-internal labels like "Stop" are omitted — they clutter the list without helping the user.
@@ -723,18 +1441,22 @@ private struct NoticeRow: View {
     }
 
     private var responseSection: some View {
-        Text(Self.attributedMarkdown(Self.formatResponseForDisplay(responseText)))
-            .font(.callout)
-            .lineSpacing(3)
+        Markdown(Self.formatResponseForDisplay(responseText))
+            .markdownTheme(.agmPanel)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .padding(8)
+            .padding(.trailing, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.primary.opacity(0.035))
             )
+            .overlay(alignment: .topTrailing) {
+                CopyButton(text: responseText)
+                    .padding(4)
+            }
     }
 
     private var requestText: String? {
@@ -751,16 +1473,6 @@ private struct NoticeRow: View {
     private static func displayableText(_ raw: String?) -> String? {
         guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         return text
-    }
-
-    private static func attributedMarkdown(_ string: String) -> AttributedString {
-        var options = AttributedString.MarkdownParsingOptions()
-        options.interpretedSyntax = .full
-        options.failurePolicy = .returnPartiallyParsedIfPossible
-        if let parsed = try? AttributedString(markdown: string, options: options) {
-            return parsed
-        }
-        return AttributedString(string)
     }
 
     /// Normalizes line endings / blank lines; if the payload is JSON, pretty-prints inside a ```json fence for markdown rendering.
@@ -858,4 +1570,6 @@ private struct NoticeRow: View {
 #Preview {
     ContentView()
         .environmentObject(PanelModel())
+        .environmentObject(NotepadModel())
+        .environmentObject(ProjectGroupModel())
 }

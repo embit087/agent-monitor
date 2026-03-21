@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# DEPRECATED: Use `bash install.sh` instead for a complete one-click install.
+# This script is kept for backward compatibility with existing workflows.
+#
 # One-shot setup: executable bits, Cursor ~/.cursor/hooks.json, swift build, sanity checks, next steps.
 #
 # Usage:

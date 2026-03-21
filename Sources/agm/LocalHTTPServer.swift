@@ -47,12 +47,30 @@ private struct NotifyWSHandler: WSMessageHandler {
     }
 }
 
+private struct NotepadPayload: Decodable {
+    var id: String?
+    var title: String?
+    var content: String?
+    var language: String?
+}
+
+private struct PadsEnvelope: Encodable {
+    var pads: [Pad]
+}
+
 enum LocalHTTPServer {
+    private static let padEncoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }()
+
     static func run(
         port: UInt16,
         secret: String?,
         hub: BrowserHub,
-        viewModel: PanelModel
+        viewModel: PanelModel,
+        notepad: NotepadModel
     ) async throws {
         // Use IPv4 loopback so hooks using `127.0.0.1` (not just `localhost` / ::1) can connect.
         let server = HTTPServer(address: try sockaddr_in.inet(ip4: "127.0.0.1", port: port))
@@ -138,6 +156,141 @@ enum LocalHTTPServer {
         }
 
         await server.appendRoute("GET /api/ws", to: wsGated)
+
+        // MARK: Notepad routes
+
+        await server.appendRoute("POST /api/notepad") { req in
+            guard await authOK(req, secret: secret) else {
+                return HTTPResponse(
+                    statusCode: .unauthorized,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"unauthorized"}"#.utf8)
+                )
+            }
+            let data = try await req.bodyData
+            let payload: NotepadPayload
+            do {
+                payload = try JSONDecoder().decode(NotepadPayload.self, from: data)
+            } catch {
+                return HTTPResponse(
+                    statusCode: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"invalid json"}"#.utf8)
+                )
+            }
+            let pad = await MainActor.run {
+                notepad.createPadAndOpen(
+                    title: payload.title ?? "Untitled",
+                    content: payload.content ?? "",
+                    language: payload.language ?? "markdown"
+                )
+            }
+            let out = try padEncoder.encode(pad)
+            return HTTPResponse(
+                statusCode: .created,
+                headers: [.contentType: "application/json"],
+                body: out
+            )
+        }
+
+        await server.appendRoute("GET /api/notepad") { req in
+            let idParam = req.query.first { $0.name == "id" }?.value
+            if let idStr = idParam, let uuid = UUID(uuidString: idStr) {
+                guard let pad = await MainActor.run(body: { notepad.pad(by: uuid) }) else {
+                    return HTTPResponse(
+                        statusCode: .notFound,
+                        headers: [.contentType: "application/json"],
+                        body: Data(#"{"error":"not found"}"#.utf8)
+                    )
+                }
+                let out = try padEncoder.encode(pad)
+                return HTTPResponse(
+                    statusCode: .ok,
+                    headers: [.contentType: "application/json"],
+                    body: out
+                )
+            } else {
+                let pads = await MainActor.run { notepad.pads }
+                let out = try padEncoder.encode(PadsEnvelope(pads: pads))
+                return HTTPResponse(
+                    statusCode: .ok,
+                    headers: [.contentType: "application/json"],
+                    body: out
+                )
+            }
+        }
+
+        await server.appendRoute("PUT /api/notepad") { req in
+            guard await authOK(req, secret: secret) else {
+                return HTTPResponse(
+                    statusCode: .unauthorized,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"unauthorized"}"#.utf8)
+                )
+            }
+            let data = try await req.bodyData
+            let payload: NotepadPayload
+            do {
+                payload = try JSONDecoder().decode(NotepadPayload.self, from: data)
+            } catch {
+                return HTTPResponse(
+                    statusCode: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"invalid json"}"#.utf8)
+                )
+            }
+            let idStr = payload.id ?? req.query.first(where: { $0.name == "id" })?.value
+            guard let idStr, let uuid = UUID(uuidString: idStr) else {
+                return HTTPResponse(
+                    statusCode: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"id required"}"#.utf8)
+                )
+            }
+            let found = await MainActor.run { () -> Bool in
+                guard notepad.pad(by: uuid) != nil else { return false }
+                if let c = payload.content { notepad.updateContent(c, padId: uuid) }
+                if let l = payload.language { notepad.updateLanguage(l, padId: uuid) }
+                if let t = payload.title { notepad.updateTitle(t, padId: uuid) }
+                return true
+            }
+            guard found else {
+                return HTTPResponse(
+                    statusCode: .notFound,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"not found"}"#.utf8)
+                )
+            }
+            return HTTPResponse(
+                statusCode: .ok,
+                headers: [.contentType: "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+
+        await server.appendRoute("DELETE /api/notepad") { req in
+            guard await authOK(req, secret: secret) else {
+                return HTTPResponse(
+                    statusCode: .unauthorized,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"unauthorized"}"#.utf8)
+                )
+            }
+            let idStr = req.query.first(where: { $0.name == "id" })?.value
+            guard let idStr, let uuid = UUID(uuidString: idStr) else {
+                return HTTPResponse(
+                    statusCode: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    body: Data(#"{"error":"id required"}"#.utf8)
+                )
+            }
+            await MainActor.run { notepad.deletePad(id: uuid) }
+            return HTTPResponse(
+                statusCode: .ok,
+                headers: [.contentType: "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
 
         await MainActor.run {
             viewModel.markServerListening()

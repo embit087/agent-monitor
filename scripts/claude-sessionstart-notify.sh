@@ -7,6 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/agm-env.sh"
 
 HOOK_JSON=""
 if [ ! -t 0 ]; then
@@ -30,7 +31,7 @@ if [[ "$IS_CURSOR" == "1" ]]; then
 fi
 
 if [[ -n "$HOOK_JSON" ]]; then
-  printf '%s' "$HOOK_JSON" | bash "$SCRIPT_DIR/winid-session-register.sh" >/dev/null 2>&1 || true
+  printf '%s' "$HOOK_JSON" | bash "$AGM_SCRIPTS/winid-session-register.sh" >/dev/null 2>&1 || true
 else
-  bash "$SCRIPT_DIR/winid-session-register.sh" >/dev/null 2>&1 || true
+  bash "$AGM_SCRIPTS/winid-session-register.sh" >/dev/null 2>&1 || true
 fi
