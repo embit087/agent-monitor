@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Monitor (AGM)</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg-window: #252526;
+    --bg-card: rgba(255,255,255,0.05);
+    --bg-bar: rgba(255,255,255,0.04);
+    --bg-hover: rgba(255,255,255,0.08);
+    --text-primary: #e0e0e0;
+    --text-secondary: #999;
+    --text-tertiary: #777;
+    --text-quaternary: #555;
+    --mint: #5ac8b8;
+    --purple: #9b7bc8;
+    --orange: #e0943a;
+    --cyan: #5ca8b8;
+    --green: #5cb85c;
+    --red: rgba(255,80,80,0.8);
+    --divider: rgba(255,255,255,0.08);
+    --card-radius: 10px;
+    --window-pad-x: 12px;
+    --window-pad-top: 8px;
+    --section-gap: 10px;
+    --card-pad: 8px;
+    --row-gap: 6px;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 32px;
+    min-height: 100vh;
+    color: var(--text-primary);
+  }
+
+  .window {
+    width: 560px;
+    min-height: 640px;
+    background: var(--bg-window);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.1);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Title bar */
+  .titlebar {
+    height: 38px;
+    background: #2d2d2d;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    -webkit-app-region: drag;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--divider);
+  }
+
+  .traffic-lights {
+    display: flex;
+    gap: 8px;
+    margin-right: 12px;
+  }
+
+  .traffic-light {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+  }
+
+  .tl-close { background: #ff5f57; }
+  .tl-minimize { background: #febc2e; }
+  .tl-maximize { background: #28c840; }
+
+  .titlebar-text {
+    flex: 1;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .titlebar-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--mint);
+    box-shadow: 0 0 6px var(--mint);
+  }
+
+  .version-text {
+    font-size: 10px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    color: var(--text-quaternary);
+  }
+
+  /* Project bar */
+  .project-bar {
+    display: flex;
+    align-items: center;
+    padding: 8px var(--window-pad-x);
+    gap: 6px;
+    background: var(--bg-bar);
+    border-bottom: 1px solid var(--divider);
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+
+  .project-bar::-webkit-scrollbar { display: none; }
+
+  .filter-toggle {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .filter-toggle:hover { background: var(--bg-hover); }
+
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border-radius: 100px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.04);
+    border: none;
+    transition: all 0.12s ease;
+    flex-shrink: 0;
+  }
+
+  .chip:hover { background: rgba(255,255,255,0.08); }
+  .chip.selected { background: rgba(255,255,255,0.12); color: var(--text-primary); font-weight: 600; }
+
+  .chip-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .chip-count {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 100px;
+    color: #fff;
+    min-width: 16px;
+    text-align: center;
+  }
+
+  .bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .icon-btn {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.12s;
+    flex-shrink: 0;
+  }
+
+  .icon-btn:hover { background: var(--bg-hover); }
+  .icon-btn.notepad-btn { color: var(--text-secondary); }
+  .icon-btn.eye-btn { color: var(--text-secondary); }
+  .icon-btn.trash-btn { color: var(--red); }
+
+  /* Filter bar */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    padding: 6px var(--window-pad-x);
+    gap: 6px;
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+
+  .filter-bar::-webkit-scrollbar { display: none; }
+
+  .filter-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    transition: all 0.12s ease;
+    flex-shrink: 0;
+  }
+
+  .filter-chip.cursor-chip { color: var(--purple); background: rgba(155,123,200,0.08); }
+  .filter-chip.cursor-chip.selected { background: rgba(155,123,200,0.18); border-color: rgba(155,123,200,0.3); }
+  .filter-chip.claude-chip { color: var(--cyan); background: rgba(92,168,184,0.08); }
+  .filter-chip.claude-chip.selected { background: rgba(92,168,184,0.18); border-color: rgba(92,168,184,0.3); }
+  .filter-chip.terminal-chip { color: var(--orange); background: rgba(224,148,58,0.08); }
+  .filter-chip.terminal-chip.selected { background: rgba(224,148,58,0.18); border-color: rgba(224,148,58,0.3); }
+
+  .filter-chip .count {
+    font-size: 9px;
+    font-weight: 700;
+    opacity: 0.7;
+  }
+
+  /* Session tab bar */
+  .session-tabs {
+    display: flex;
+    align-items: center;
+    padding: 4px var(--window-pad-x);
+    gap: 4px;
+    flex-shrink: 0;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--divider);
+  }
+
+  .session-tabs::-webkit-scrollbar { display: none; }
+
+  .session-tab {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 7px;
+    padding-right: 3px;
+    border-radius: 100px;
+    font-size: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.12s ease;
+    flex-shrink: 0;
+  }
+
+  .session-tab .tab-icon {
+    font-size: 9px;
+    opacity: 0.7;
+  }
+
+  .session-tab .tab-index {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    opacity: 0.8;
+  }
+
+  .session-tab .tab-title {
+    font-weight: 500;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .session-tab .tab-close {
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 8px;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .session-tab:hover .tab-close { opacity: 0.6; }
+
+  .session-tab .project-dots {
+    display: flex;
+    gap: 2px;
+  }
+
+  .session-tab .project-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+  }
+
+  .session-tab.cursor-tab { color: var(--purple); background: rgba(155,123,200,0.06); }
+  .session-tab.cursor-tab.selected { background: rgba(155,123,200,0.14); }
+  .session-tab.claude-tab { color: var(--cyan); background: rgba(92,168,184,0.06); }
+  .session-tab.claude-tab.selected { background: rgba(92,168,184,0.14); }
+  .session-tab.terminal-tab { color: var(--orange); background: rgba(224,148,58,0.06); }
+  .session-tab.terminal-tab.selected { background: rgba(224,148,58,0.14); }
+
+  /* Card list */
+  .card-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--window-pad-top) var(--window-pad-x) 10px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--row-gap);
+  }
+
+  .card-list::-webkit-scrollbar { width: 6px; }
+  .card-list::-webkit-scrollbar-track { background: transparent; }
+  .card-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+
+  /* Agent Card */
+  .agent-card {
+    background: var(--bg-card);
+    border-radius: var(--card-radius);
+    padding: var(--card-pad);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    box-shadow: 0 3px 8px rgba(0,0,0,0.06);
+    border: 1px solid transparent;
+    transition: border-color 0.15s;
+  }
+
+  .agent-card.selected {
+    border-color: rgba(90,200,184,0.72);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .card-switch-btn {
+    font-size: 10px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    opacity: 0.7;
+  }
+
+  .card-session-id {
+    font-size: 9px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+  }
+
+  .card-session-id:hover { background: rgba(255,255,255,0.08); }
+
+  .card-spacer { flex: 1; }
+
+  .card-timestamp {
+    font-size: 9px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    color: var(--text-quaternary);
+    letter-spacing: 0.2px;
+  }
+
+  .card-source-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 100px;
+    width: fit-content;
+  }
+
+  .badge-claude { color: var(--mint); background: rgba(90,200,184,0.12); }
+  .badge-cursor { color: var(--purple); background: rgba(155,123,200,0.12); }
+  .badge-terminal { color: var(--orange); background: rgba(224,148,58,0.12); }
+
+  .card-request {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.03);
+    padding: 6px 8px;
+    border-radius: 6px;
+    line-height: 1.5;
+    position: relative;
+  }
+
+  .card-response {
+    font-size: 12px;
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.035);
+    padding: 8px;
+    border-radius: 8px;
+    line-height: 1.55;
+    position: relative;
+  }
+
+  .card-response h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+
+  .card-response p {
+    margin: 2px 0;
+  }
+
+  .card-response code {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 11.5px;
+    background: rgba(255,255,255,0.06);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  .card-response pre {
+    background: rgba(255,255,255,0.06);
+    padding: 8px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 4px 0;
+  }
+
+  .card-response pre code {
+    background: none;
+    padding: 0;
+    font-size: 11.5px;
+  }
+
+  .copy-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    border: none;
+    background: rgba(255,255,255,0.06);
+    color: var(--text-quaternary);
+    cursor: pointer;
+    font-size: 9px;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .card-request:hover .copy-btn,
+  .card-response:hover .copy-btn { opacity: 1; }
+
+  /* Empty state */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    color: var(--text-tertiary);
+    text-align: center;
+  }
+
+  .empty-icon {
+    font-size: 36px;
+    margin-bottom: 12px;
+    opacity: 0.3;
+  }
+
+  .empty-heading {
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+
+  .empty-subtitle {
+    font-size: 11px;
+    color: var(--text-quaternary);
+  }
+</style>
+</head>
+<body>
+
+<div class="window">
+  <!-- Title bar -->
+  <div class="titlebar">
+    <div class="traffic-lights">
+      <div class="traffic-light tl-close"></div>
+      <div class="traffic-light tl-minimize"></div>
+      <div class="traffic-light tl-maximize"></div>
+    </div>
+    <div class="titlebar-text">Agent Monitor</div>
+    <div class="titlebar-right">
+      <div class="status-dot"></div>
+      <span class="version-text">v1.4.2</span>
+    </div>
+  </div>
+
+  <!-- Project bar -->
+  <div class="project-bar">
+    <button class="filter-toggle" title="Toggle type filters">☰</button>
+    <button class="chip selected">All Projects</button>
+    <button class="chip">
+      <span class="chip-dot" style="background: hsl(0, 45%, 65%)"></span>
+      api-service
+      <span class="chip-count" style="background: hsl(0, 45%, 55%)">3</span>
+    </button>
+    <button class="chip">
+      <span class="chip-dot" style="background: hsl(210, 45%, 65%)"></span>
+      frontend
+      <span class="chip-count" style="background: hsl(210, 45%, 55%)">2</span>
+    </button>
+    <button class="chip">
+      <span class="chip-dot" style="background: hsl(126, 45%, 55%)"></span>
+      infra
+      <span class="chip-count" style="background: hsl(126, 45%, 45%)">1</span>
+    </button>
+    <button class="chip">
+      <span class="chip-dot" style="background: hsl(280, 45%, 65%)"></span>
+      ml-pipeline
+    </button>
+    <div class="bar-actions">
+      <button class="icon-btn notepad-btn" title="Notepad (⌘⇧N)">📝</button>
+      <button class="icon-btn eye-btn" title="Hide Responses (⌘⇧R)">👁</button>
+      <button class="icon-btn trash-btn" title="Clear All (⌘⌫)">🗑</button>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <button class="filter-chip cursor-chip selected">Cursor <span class="count">3</span></button>
+    <button class="filter-chip claude-chip selected">Claude Code <span class="count">4</span></button>
+    <button class="filter-chip terminal-chip">Terminal <span class="count">1</span></button>
+  </div>
+
+  <!-- Session tabs -->
+  <div class="session-tabs">
+    <div class="session-tab claude-tab selected">
+      <span class="tab-icon">⬡</span>
+      <span class="tab-index">#1</span>
+      <span class="tab-title">api-service refactor</span>
+      <span class="project-dots">
+        <span class="project-dot" style="background: hsl(0, 45%, 65%)"></span>
+      </span>
+      <span class="tab-close">✕</span>
+    </div>
+    <div class="session-tab claude-tab">
+      <span class="tab-icon">⬡</span>
+      <span class="tab-index">#2</span>
+      <span class="tab-title">fix auth middleware</span>
+      <span class="project-dots">
+        <span class="project-dot" style="background: hsl(0, 45%, 65%)"></span>
+      </span>
+      <span class="tab-close">✕</span>
+    </div>
+    <div class="session-tab cursor-tab">
+      <span class="tab-icon">◈</span>
+      <span class="tab-index">#3</span>
+      <span class="tab-title">dashboard UI</span>
+      <span class="project-dots">
+        <span class="project-dot" style="background: hsl(210, 45%, 65%)"></span>
+      </span>
+      <span class="tab-close">✕</span>
+    </div>
+    <div class="session-tab cursor-tab">
+      <span class="tab-icon">◈</span>
+      <span class="tab-index">#4</span>
+      <span class="tab-title">component tests</span>
+      <span class="tab-close">✕</span>
+    </div>
+    <div class="session-tab claude-tab">
+      <span class="tab-icon">⬡</span>
+      <span class="tab-index">#5</span>
+      <span class="tab-title">deploy pipeline</span>
+      <span class="project-dots">
+        <span class="project-dot" style="background: hsl(126, 45%, 55%)"></span>
+      </span>
+      <span class="tab-close">✕</span>
+    </div>
+    <div class="session-tab cursor-tab" style="opacity: 0.5;">
+      <span class="tab-icon">◈</span>
+      <span class="tab-index">#6</span>
+      <span class="tab-title">legacy cleanup</span>
+      <span class="tab-close">✕</span>
+    </div>
+    <div class="session-tab terminal-tab">
+      <span class="tab-icon">▸</span>
+      <span class="tab-index">#7</span>
+      <span class="tab-title">dev server</span>
+      <span class="tab-close">✕</span>
+    </div>
+  </div>
+
+  <!-- Card list -->
+  <div class="card-list">
+
+    <!-- Card 1: Selected Claude Code card -->
+    <div class="agent-card selected">
+      <div class="card-header">
+        <span class="card-title">api-service refactor</span>
+        <span class="card-switch-btn">↗ Switch</span>
+        <span class="card-session-id">a3f8c1d2</span>
+        <span class="card-spacer"></span>
+      </div>
+      <div class="card-timestamp">Mar 21, 2026 · 2:14 PM</div>
+      <span class="card-source-badge badge-claude">Turn complete</span>
+      <div class="card-request">
+        Refactor the authentication service to use JWT tokens instead of session cookies. Update all middleware and add refresh token rotation.
+        <button class="copy-btn">⧉</button>
+      </div>
+      <div class="card-response">
+        <h3>Changes made</h3>
+        <p>Refactored <code>auth-service.ts</code> to use JWT with RS256 signing. Added <code>refreshToken()</code> with automatic rotation and updated the middleware chain in <code>server.ts</code>.</p>
+        <pre><code>// New JWT middleware
+app.use('/api', jwtVerify({
+  secret: process.env.JWT_SECRET,
+  algorithms: ['RS256']
+}));</code></pre>
+        <p>All 23 tests passing. Ready for review.</p>
+        <button class="copy-btn">⧉</button>
+      </div>
+    </div>
+
+    <!-- Card 2: Cursor card -->
+    <div class="agent-card">
+      <div class="card-header">
+        <span class="card-title">dashboard UI</span>
+        <span class="card-switch-btn">↗ Switch</span>
+        <span class="card-session-id">b7e2f9a1</span>
+        <span class="card-spacer"></span>
+      </div>
+      <div class="card-timestamp">Mar 21, 2026 · 2:12 PM</div>
+      <span class="card-source-badge badge-cursor">Turn complete</span>
+      <div class="card-request">
+        Create a responsive metrics dashboard with real-time charts for API latency, error rates, and throughput.
+        <button class="copy-btn">⧉</button>
+      </div>
+      <div class="card-response">
+        <p>Built the dashboard in <code>src/components/MetricsDashboard.tsx</code> with three chart panels using Recharts. Added WebSocket hook for real-time data streaming. Responsive grid layout adapts from 1 to 3 columns.</p>
+        <button class="copy-btn">⧉</button>
+      </div>
+    </div>
+
+    <!-- Card 3: Claude Code card -->
+    <div class="agent-card">
+      <div class="card-header">
+        <span class="card-title">fix auth middleware</span>
+        <span class="card-switch-btn">↗ Switch</span>
+        <span class="card-session-id">c4d6e8f0</span>
+        <span class="card-spacer"></span>
+      </div>
+      <div class="card-timestamp">Mar 21, 2026 · 2:08 PM</div>
+      <span class="card-source-badge badge-claude">Turn complete</span>
+      <div class="card-request">
+        Fix the CORS preflight issue causing 403 errors on the /api/v2 endpoints from the new frontend domain.
+        <button class="copy-btn">⧉</button>
+      </div>
+      <div class="card-response">
+        <p>Added <code>app.embitious.dev</code> to the allowed origins list and configured proper preflight handling for <code>OPTIONS</code> requests. The issue was that the v2 router was missing the CORS middleware that v1 had.</p>
+        <button class="copy-btn">⧉</button>
+      </div>
+    </div>
+
+    <!-- Card 4: Cursor card -->
+    <div class="agent-card">
+      <div class="card-header">
+        <span class="card-title">component tests</span>
+        <span class="card-switch-btn">↗ Switch</span>
+        <span class="card-session-id">d9a3b5c7</span>
+        <span class="card-spacer"></span>
+      </div>
+      <div class="card-timestamp">Mar 21, 2026 · 2:05 PM</div>
+      <span class="card-source-badge badge-cursor">Turn complete</span>
+      <div class="card-request">
+        Write unit tests for the UserProfile, SettingsPanel, and NotificationBell components. Target 90% coverage.
+        <button class="copy-btn">⧉</button>
+      </div>
+      <div class="card-response">
+        <p>Added 34 test cases across 3 test files. Coverage: UserProfile 95%, SettingsPanel 91%, NotificationBell 93%. All tests green.</p>
+        <button class="copy-btn">⧉</button>
+      </div>
+    </div>
+
+    <!-- Card 5: Claude Code deploy -->
+    <div class="agent-card">
+      <div class="card-header">
+        <span class="card-title">deploy pipeline</span>
+        <span class="card-switch-btn">↗ Switch</span>
+        <span class="card-session-id">e1f2a3b4</span>
+        <span class="card-spacer"></span>
+      </div>
+      <div class="card-timestamp">Mar 21, 2026 · 1:58 PM</div>
+      <span class="card-source-badge badge-claude">Turn complete</span>
+      <div class="card-request">
+        Set up the GitHub Actions CI/CD pipeline for staging deployments with Docker build caching and Terraform apply.
+        <button class="copy-btn">⧉</button>
+      </div>
+      <div class="card-response">
+        <p>Created <code>.github/workflows/deploy-staging.yml</code> with multi-stage Docker builds, layer caching via <code>actions/cache</code>, and conditional Terraform apply. Added Slack notification on completion.</p>
+        <button class="copy-btn">⧉</button>
+      </div>
+    </div>
+
+    <!-- Card 6: Cursor legacy -->
+    <div class="agent-card" style="opacity: 0.65;">
+      <div class="card-header">
+        <span class="card-title">legacy cleanup</span>
+        <span class="card-switch-btn">↗ Switch</span>
+        <span class="card-session-id">f5c6d7e8</span>
+        <span class="card-spacer"></span>
+      </div>
+      <div class="card-timestamp">Mar 21, 2026 · 1:45 PM</div>
+      <span class="card-source-badge badge-cursor">Turn complete</span>
+      <div class="card-request">
+        Remove deprecated v1 API endpoints and migrate remaining consumers to v2.
+        <button class="copy-btn">⧉</button>
+      </div>
+      <div class="card-response">
+        <p>Removed 12 deprecated endpoints. Updated 4 internal services still hitting v1. Added 301 redirects for any external consumers during transition period.</p>
+        <button class="copy-btn">⧉</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>
