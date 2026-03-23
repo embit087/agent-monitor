@@ -1,10 +1,25 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type { Notice } from '../types/notice.ts'
 
 const TAB_WIDTH = 200
 const MONITOR_WIDTH = 560
+
+/** Get Agent Monitor's window bounds in logical points for layout exclusion. */
+async function getMonitorRect(): Promise<WindowRect> {
+  const win = getCurrentWindow()
+  const pos = await win.outerPosition()
+  const size = await win.outerSize()
+  const factor = await win.scaleFactor()
+  return {
+    x: Math.round(pos.x / factor),
+    y: Math.round(pos.y / factor),
+    width: Math.round(size.width / factor),
+    height: Math.round(size.height / factor),
+  }
+}
 
 export type SwitchStatus =
   | { kind: 'idle' }
@@ -13,13 +28,46 @@ export type SwitchStatus =
   | { kind: 'failed'; id: string; error?: string }
 
 export type TitleFilter = 'cursor' | 'claudeCode' | 'terminal' | null
-export type SidebarMode = 'monitor' | 'tab' | 'project'
+export type SidebarMode = 'monitor' | 'tab' | 'project' | 'settings'
+export type MonitorSlotPosition = 'first' | 'last' | 'fixed' | 'none'
 
 export interface DiscoveredSession {
   app: string
   title: string
   tty: string | null
+  pid: number | null
   sourceKind: string
+  alreadyAdded: boolean
+}
+
+export interface OrphanedSession {
+  key: string
+  title: string
+  sourceKind: string
+}
+
+export interface DiscoverResult {
+  sessions: DiscoveredSession[]
+  orphaned: OrphanedSession[]
+}
+
+export interface WindowRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface ScreenSize {
+  width: number
+  height: number
+}
+
+export interface LayoutPreview {
+  screen: ScreenSize
+  rects: WindowRect[]
+  monitorIndex: number | null
+  monitorRect: WindowRect | null
 }
 
 interface PanelState {
@@ -35,8 +83,16 @@ interface PanelState {
   sidebarMode: SidebarMode
   focusInputAt: number
   draggingSessionKey: string | null
+  overlayActive: boolean
+  previewLayout: string | null
+  previewSessionIds: string[] | null
+  monitorSlotPosition: MonitorSlotPosition
+  alwaysOnTop: boolean
+  highlightSessionId: string | null
 
   // Actions
+  setAlwaysOnTop: (on: boolean) => Promise<void>
+  setMonitorSlotPosition: (pos: MonitorSlotPosition) => void
   fetchNotices: () => Promise<void>
   fetchServerStatus: () => Promise<void>
   prependNotice: (notice: Notice) => void
@@ -59,10 +115,14 @@ interface PanelState {
   upsertManualTerminal: (winid: string) => Promise<void>
   captureFrontmost: () => Promise<{ ok: boolean; message: string }>
   arrangeWindows: (sessionIds: string[], layout: string) => Promise<{ ok: boolean; message: string }>
+  showLayoutPreview: (sessionIds: string[], layout: string) => Promise<void>
+  hideLayoutPreview: () => Promise<void>
+  confirmLayout: () => Promise<{ ok: boolean; message: string }>
   cleanupStaleSessions: () => Promise<{ ok: boolean; message: string }>
-  discoverSessions: () => Promise<DiscoveredSession[]>
+  discoverSessions: () => Promise<DiscoverResult>
   registerDiscovered: (s: DiscoveredSession) => Promise<{ ok: boolean; message: string }>
   capturePreview: (sessionId: string) => Promise<void>
+  showHighlightBorder: (sessionId: string, color: string) => Promise<void>
 }
 
 export const usePanelStore = create<PanelState>((set, get) => ({
@@ -78,6 +138,24 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   sidebarMode: 'monitor',
   focusInputAt: 0,
   draggingSessionKey: null,
+  overlayActive: false,
+  previewLayout: null,
+  previewSessionIds: null,
+  monitorSlotPosition: 'last',
+  alwaysOnTop: true,
+  highlightSessionId: null,
+
+  setAlwaysOnTop: async (on) => {
+    try {
+      const win = getCurrentWindow()
+      await win.setAlwaysOnTop(on)
+      set({ alwaysOnTop: on })
+    } catch {
+      // ignore
+    }
+  },
+
+  setMonitorSlotPosition: (pos) => set({ monitorSlotPosition: pos }),
 
   fetchNotices: async () => {
     try {
@@ -238,8 +316,125 @@ export const usePanelStore = create<PanelState>((set, get) => ({
 
   arrangeWindows: async (sessionIds, layout) => {
     try {
-      return await invoke<{ ok: boolean; message: string }>('arrange_windows', { sessionIds, layout })
+      const { monitorSlotPosition } = get()
+      let monitorSlot: number | null = null
+      let excludeSelf: boolean | null = null
+      if (monitorSlotPosition === 'first') monitorSlot = 0
+      else if (monitorSlotPosition === 'last') monitorSlot = sessionIds.length
+      else if (monitorSlotPosition === 'fixed') excludeSelf = true
+      return await invoke<{ ok: boolean; message: string }>(
+        'arrange_windows',
+        { sessionIds, layout, monitorSlot, excludeSelf }
+      )
     } catch (e) {
+      return { ok: false, message: String(e) }
+    }
+  },
+
+  showLayoutPreview: async (sessionIds, layout) => {
+    // Close existing overlay if any
+    try {
+      const existing = await WebviewWindow.getByLabel('overlay')
+      if (existing) await existing.close()
+    } catch { /* ignore */ }
+
+    try {
+      const { monitorSlotPosition } = get()
+      let monitorSlot: number | null = null
+      let excludeSelf: boolean | null = null
+      if (monitorSlotPosition === 'first') monitorSlot = 0
+      else if (monitorSlotPosition === 'last') monitorSlot = sessionIds.length
+      else if (monitorSlotPosition === 'fixed') excludeSelf = true
+
+      const preview = await invoke<LayoutPreview>(
+        'preview_layout',
+        { sessionIds, layout, monitorSlot, excludeSelf }
+      )
+
+      const params = new URLSearchParams({
+        rects: JSON.stringify(preview.rects),
+        screen: JSON.stringify(preview.screen),
+        layout,
+        ...(preview.monitorIndex != null ? { monitorIndex: String(preview.monitorIndex) } : {}),
+      })
+
+      // Screen size from Rust is in logical points (Quartz reports logical on macOS).
+      // Tauri window x/y/width/height are also in logical points.
+      const overlay = new WebviewWindow('overlay', {
+        url: `/overlay?${params}`,
+        x: 0,
+        y: 0,
+        width: preview.screen.width,
+        height: preview.screen.height,
+        transparent: true,
+        decorations: false,
+        alwaysOnTop: true,
+        visible: true,
+        focus: false,
+        shadow: false,
+        skipTaskbar: true,
+        resizable: false,
+      })
+
+      overlay.once('tauri://created', async () => {
+        try {
+          await overlay.setIgnoreCursorEvents(true)
+        } catch (e) {
+          console.error('Failed to set ignore cursor events:', e)
+        }
+      })
+
+      overlay.once('tauri://error', (e) => {
+        console.error('Overlay window error:', e)
+        set({ overlayActive: false, previewLayout: null, previewSessionIds: null })
+      })
+
+      set({
+        overlayActive: true,
+        previewLayout: layout,
+        previewSessionIds: sessionIds,
+      })
+    } catch (e) {
+      console.error('Failed to show layout preview:', e)
+      set({ overlayActive: false, previewLayout: null, previewSessionIds: null })
+    }
+  },
+
+  hideLayoutPreview: async () => {
+    try {
+      const overlay = await WebviewWindow.getByLabel('overlay')
+      if (overlay) await overlay.close()
+    } catch { /* ignore */ }
+    set({ overlayActive: false, previewLayout: null, previewSessionIds: null })
+  },
+
+  confirmLayout: async () => {
+    const { previewSessionIds, previewLayout, monitorSlotPosition } = get()
+    if (!previewSessionIds || !previewLayout) {
+      return { ok: false, message: 'No preview active' }
+    }
+
+    let monitorSlot: number | null = null
+    let excludeSelf: boolean | null = null
+    if (monitorSlotPosition === 'first') monitorSlot = 0
+    else if (monitorSlotPosition === 'last') monitorSlot = previewSessionIds.length
+    else if (monitorSlotPosition === 'fixed') excludeSelf = true
+
+    // Close the overlay first
+    try {
+      const overlay = await WebviewWindow.getByLabel('overlay')
+      if (overlay) await overlay.close()
+    } catch { /* ignore */ }
+
+    try {
+      const result = await invoke<{ ok: boolean; message: string }>(
+        'arrange_windows',
+        { sessionIds: previewSessionIds, layout: previewLayout, monitorSlot, excludeSelf }
+      )
+      set({ overlayActive: false, previewLayout: null, previewSessionIds: null })
+      return result
+    } catch (e) {
+      set({ overlayActive: false, previewLayout: null, previewSessionIds: null })
       return { ok: false, message: String(e) }
     }
   },
@@ -258,10 +453,10 @@ export const usePanelStore = create<PanelState>((set, get) => ({
 
   discoverSessions: async () => {
     try {
-      return await invoke<DiscoveredSession[]>('discover_sessions')
+      return await invoke<DiscoverResult>('discover_sessions')
     } catch (e) {
       console.error('Failed to discover sessions:', e)
-      return []
+      return { sessions: [], orphaned: [] }
     }
   },
 
@@ -269,7 +464,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
     try {
       const result = await invoke<{ ok: boolean; message: string }>(
         'register_discovered_session',
-        { app: s.app, title: s.title, tty: s.tty, sourceKind: s.sourceKind }
+        { app: s.app, title: s.title, tty: s.tty, pid: s.pid, sourceKind: s.sourceKind }
       )
       if (result.ok) {
         await get().fetchNotices()
@@ -288,6 +483,60 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       }
     } catch {
       // Silently fail preview capture
+    }
+  },
+
+  showHighlightBorder: async (sessionId, color) => {
+    // Close existing highlight — acts as toggle when re-clicking same session
+    try {
+      const existing = await WebviewWindow.getByLabel('highlight')
+      if (existing) {
+        await existing.close()
+        // If same session, just toggle off
+        const prev = get().highlightSessionId
+        if (prev === sessionId) {
+          set({ highlightSessionId: null })
+          return
+        }
+      }
+    } catch { /* ignore */ }
+
+    try {
+      const rect = await invoke<{ x: number; y: number; width: number; height: number }>(
+        'get_session_bounds',
+        { sessionId }
+      )
+
+      const pad = 4
+      const params = new URLSearchParams({
+        color,
+      })
+
+      const highlight = new WebviewWindow('highlight', {
+        url: `/highlight?${params}`,
+        x: rect.x - pad,
+        y: rect.y - pad,
+        width: rect.width + pad * 2,
+        height: rect.height + pad * 2,
+        transparent: true,
+        decorations: false,
+        alwaysOnTop: true,
+        visible: true,
+        focus: false,
+        shadow: false,
+        skipTaskbar: true,
+        resizable: false,
+      })
+
+      highlight.once('tauri://created', async () => {
+        try {
+          await highlight.setIgnoreCursorEvents(true)
+        } catch { /* ignore */ }
+      })
+
+      set({ highlightSessionId: sessionId })
+    } catch {
+      // Silently fail highlight
     }
   },
 }))

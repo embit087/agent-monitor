@@ -4,7 +4,7 @@ use crate::state::AppState;
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 #[derive(Serialize)]
@@ -18,6 +18,29 @@ pub struct PtyWriteResult {
     pub ok: bool,
     pub message: String,
     pub tty: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutPreview {
+    pub screen: crate::services::window_layout::ScreenSize,
+    pub rects: Vec<crate::services::window_layout::WindowRect>,
+    pub monitor_index: Option<usize>,
+    pub monitor_rect: Option<crate::services::window_layout::WindowRect>,
+}
+
+/// Get the agent-monitor main window's current bounds in logical points.
+fn get_self_rect(app_handle: &tauri::AppHandle) -> Option<crate::services::window_layout::WindowRect> {
+    let win = app_handle.get_webview_window("main")?;
+    let factor = win.scale_factor().ok()?;
+    let pos = win.outer_position().ok()?;
+    let size = win.outer_size().ok()?;
+    Some(crate::services::window_layout::WindowRect {
+        x: (pos.x as f64 / factor) as i32,
+        y: (pos.y as f64 / factor) as i32,
+        width: (size.width as f64 / factor) as u32,
+        height: (size.height as f64 / factor) as u32,
+    })
 }
 
 #[tauri::command]
@@ -108,28 +131,99 @@ pub async fn close_winid_session(
     Ok(())
 }
 
+/// Launch a new agent terminal session.
+/// `kind`: "claude", "cursor", or "plain"
+/// `auto_mode`: if true, appends skip-permissions / --force flag
+/// `terminal_app`: "terminal" (default) or "ghostty"
+/// The window is auto-positioned based on how many sessions exist.
 #[tauri::command]
 pub async fn init_new_terminal(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, Arc<RwLock<AppState>>>,
     hub: tauri::State<'_, BrowserHub>,
-    chain_command: Option<String>,
+    kind: Option<String>,
+    auto_mode: Option<bool>,
+    terminal_app: Option<String>,
+    monitor_slot: Option<usize>,
+    exclude_self: Option<bool>,
+    cwd: Option<String>,
 ) -> Result<String, String> {
     let winid_path = {
         let s = state.read().await;
         s.winid_path.clone()
     };
 
+    let kind = kind.as_deref().unwrap_or("plain");
+    let auto = auto_mode.unwrap_or(false);
+    let app = terminal_app.as_deref().unwrap_or("terminal");
+
+    let chain_command = match kind {
+        "claude" => Some(if auto {
+            "claude --dangerously-skip-permissions".to_string()
+        } else {
+            "claude".to_string()
+        }),
+        "cursor" => Some(if auto {
+            "agent --force".to_string()
+        } else {
+            "agent".to_string()
+        }),
+        _ => None,
+    };
+
+    // Compute position for the new window based on existing session count
+    let bounds = {
+        let s = state.read().await;
+        let existing = s.notices.iter()
+            .filter_map(|n| n.action.as_ref())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        // Get screen size and compute next slot
+        if let Ok(screen) = crate::services::window_layout::get_screen_size().await {
+            if exclude_self.unwrap_or(false) {
+                // Fixed mode: tile around monitor's current position
+                let monitor_rect = get_self_rect(&app_handle);
+                let total = existing + 1;
+                let rects = crate::services::window_layout::compute_layout(
+                    total, "grid", &screen, monitor_rect.as_ref(),
+                );
+                rects.last().map(|r| (r.x, r.y, r.width, r.height))
+            } else {
+                let total = existing + 1 + if monitor_slot.is_some() { 1 } else { 0 };
+                let rects = crate::services::window_layout::compute_layout(total, "grid", &screen, None);
+                // Pick the last agent slot (skip the monitor slot)
+                let monitor_idx = monitor_slot.map(|idx| idx.min(total - 1));
+                let agent_rects: Vec<_> = rects.iter().enumerate()
+                    .filter(|(i, _)| Some(*i) != monitor_idx)
+                    .map(|(_, r)| r)
+                    .collect();
+                agent_rects.last().map(|r| (r.x, r.y, r.width, r.height))
+            }
+        } else {
+            None
+        }
+    };
+
     let session_id = crate::services::winid_runner::init_new_terminal(
         winid_path.as_deref(),
         chain_command.as_deref(),
+        bounds,
+        Some(app),
+        cwd.as_deref(),
     )
     .await?;
 
-    // Create a manual terminal notice
+    // Determine display title
+    let title = match kind {
+        "claude" => "Claude Code",
+        "cursor" => "Cursor",
+        _ => "Terminal",
+    };
+
     let notice = Notice::make(
-        Some("Terminal"),
-        Some(&format!("Manual switch target for WINID {session_id}.")),
-        Some("Manual"),
+        Some(title),
+        Some(&format!("Launched {title} session {session_id}")),
+        Some("Launch"),
         Some(&session_id),
         None,
         None,
@@ -138,12 +232,6 @@ pub async fn init_new_terminal(
 
     {
         let mut s = state.write().await;
-        // Remove existing manual entry for same WINID
-        s.notices.retain(|n| {
-            !(n.title.to_lowercase().contains("terminal")
-                && n.source.as_deref() == Some("Manual")
-                && n.action.as_deref() == Some(&session_id))
-        });
         s.notices.insert(0, notice.clone());
     }
 
@@ -292,10 +380,11 @@ pub async fn send_to_session(
 }
 
 /// Scan running Terminal.app and Cursor windows for agent sessions.
+/// Also returns orphaned sessions (tabs with no matching open terminal).
 #[tauri::command]
 pub async fn discover_sessions(
     state: tauri::State<'_, Arc<RwLock<AppState>>>,
-) -> Result<Vec<crate::services::session_discover::DiscoveredSession>, String> {
+) -> Result<crate::services::session_discover::DiscoverResult, String> {
     // Collect session keys currently tracked in Agent Monitor
     let active_keys: Vec<String> = {
         let s = state.read().await;
@@ -322,6 +411,7 @@ pub async fn register_discovered_session(
     app: String,
     title: String,
     tty: Option<String>,
+    pid: Option<u32>,
     source_kind: String,
 ) -> Result<WinidResult, String> {
     let session_id = format!("disc-{}", &uuid::Uuid::new_v4().to_string()[..8]);
@@ -338,6 +428,9 @@ pub async fn register_discovered_session(
     if let Some(ref tty_val) = tty {
         meta.push_str(&format!("\ntty={tty_val}"));
     }
+    if let Some(pid_val) = pid {
+        meta.push_str(&format!("\npid={pid_val}"));
+    }
     std::fs::write(store_dir.join(&session_id), &meta)
         .map_err(|e| format!("Failed to write winid metadata: {e}"))?;
 
@@ -348,9 +441,14 @@ pub async fn register_discovered_session(
         _ => "Terminal",
     };
 
+    // Extract a clean task label from the raw terminal window title.
+    // Typical format: "repo — * Task description — claude --flags — 80×24"
+    // We want just the task/repo part, stripping command flags and dimensions.
+    let clean_label = clean_terminal_title(&title);
+
     let notice = Notice::make(
         Some(display_title),
-        Some(&format!("Discovered: {title}")),
+        Some(&format!("{display_title}: {clean_label}")),
         Some("Discover"),
         Some(&session_id),
         None,
@@ -373,12 +471,125 @@ pub async fn register_discovered_session(
     })
 }
 
-/// Arrange agent windows using a named layout.
-/// Reads winid metadata for each session to find app_name, win_name, tty.
+/// Clean up a raw terminal window title to extract a human-readable label.
+/// Strips command flags (--anything), terminal dimensions (80×24), and
+/// common noise like "claude", keeping the repo name and task description.
+fn clean_terminal_title(raw: &str) -> String {
+    // Split on " — " (em-dash with spaces) which Terminal.app uses as separator
+    let segments: Vec<&str> = raw.split(" — ").collect();
+
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in &segments {
+        let trimmed = seg.trim();
+        // Skip segments that are just command invocations (start with -- or contain only flags)
+        if trimmed.starts_with("--") || trimmed.starts_with("claude ") {
+            continue;
+        }
+        // Skip terminal dimension strings like "80×24" or "40x15"
+        if trimmed.chars().all(|c| c.is_ascii_digit() || c == '×' || c == 'x') && trimmed.len() <= 10 {
+            continue;
+        }
+        // Skip segments that look like bare flags
+        if trimmed.split_whitespace().all(|w| w.starts_with('-')) {
+            continue;
+        }
+        parts.push(trimmed);
+    }
+
+    if parts.is_empty() {
+        // Fallback: just truncate the raw title
+        raw.chars().take(60).collect()
+    } else {
+        parts.join(" — ")
+    }
+}
+
+/// Get the current screen bounds of a session's terminal window.
 #[tauri::command]
-pub async fn arrange_windows(
+pub async fn get_session_bounds(
+    session_id: String,
+) -> Result<crate::services::window_layout::WindowRect, String> {
+    let id = session_id.trim();
+    let home = dirs::home_dir().ok_or("cannot find home dir")?;
+    let meta = std::fs::read_to_string(home.join(".winids").join(id))
+        .map_err(|_| format!("no metadata for {id}"))?;
+
+    let mut app_name = String::new();
+    let mut win_name = String::new();
+    let mut tty = String::new();
+    for line in meta.lines() {
+        if let Some(v) = line.strip_prefix("app_name=") { app_name = v.trim().to_string(); }
+        if let Some(v) = line.strip_prefix("win_name=") { win_name = v.trim().to_string(); }
+        if let Some(v) = line.strip_prefix("tty=") { tty = v.trim().to_string(); }
+    }
+
+    if !tty.is_empty() && app_name.to_lowercase().contains("terminal") {
+        crate::services::window_layout::get_terminal_bounds_by_tty(&tty).await
+    } else if !app_name.is_empty() && !win_name.is_empty() {
+        let match_title = if win_name.len() > 30 { &win_name[..30] } else { &win_name };
+        crate::services::window_layout::get_window_bounds_by_title(&app_name, match_title).await
+    } else {
+        Err(format!("{id}: missing app_name/win_name/tty"))
+    }
+}
+
+/// Compute layout preview rects without moving any windows.
+/// `monitor_slot` reserves one rect for the agent-monitor window:
+/// the value is the zero-based index where it should appear.
+/// `exclude_self` keeps the monitor at its current position and tiles agents around it.
+#[tauri::command]
+pub async fn preview_layout(
+    app_handle: tauri::AppHandle,
     session_ids: Vec<String>,
     layout: String,
+    monitor_slot: Option<usize>,
+    exclude_self: Option<bool>,
+) -> Result<LayoutPreview, String> {
+    use crate::services::window_layout;
+
+    if session_ids.is_empty() {
+        return Err("no sessions".to_string());
+    }
+
+    let screen = window_layout::get_screen_size().await?;
+    let monitor_rect = get_self_rect(&app_handle);
+
+    if exclude_self.unwrap_or(false) {
+        // Fixed mode: tile agents around the monitor's current position
+        let rects = window_layout::compute_layout(
+            session_ids.len(),
+            &layout,
+            &screen,
+            monitor_rect.as_ref(),
+        );
+        return Ok(LayoutPreview { screen, rects, monitor_index: None, monitor_rect });
+    }
+
+    let (total, monitor_index) = match monitor_slot {
+        Some(idx) => {
+            let total = session_ids.len() + 1;
+            let clamped = idx.min(total - 1);
+            (total, Some(clamped))
+        }
+        None => (session_ids.len(), None),
+    };
+
+    let rects = window_layout::compute_layout(total, &layout, &screen, None);
+
+    Ok(LayoutPreview { screen, rects, monitor_index, monitor_rect })
+}
+
+/// Arrange agent windows using a named layout.
+/// Reads winid metadata for each session to find app_name, win_name, tty.
+/// `monitor_slot` reserves one rect for the agent-monitor window and moves it there.
+/// `exclude_self` keeps the monitor at its current position and tiles agents around it.
+#[tauri::command]
+pub async fn arrange_windows(
+    app_handle: tauri::AppHandle,
+    session_ids: Vec<String>,
+    layout: String,
+    monitor_slot: Option<usize>,
+    exclude_self: Option<bool>,
 ) -> Result<WinidResult, String> {
     use crate::services::window_layout;
 
@@ -387,12 +598,106 @@ pub async fn arrange_windows(
     }
 
     let screen = window_layout::get_screen_size().await?;
-    let rects = window_layout::compute_layout(session_ids.len(), &layout, &screen);
+
+    // Fixed mode: tile agents around the monitor's current position (don't move monitor)
+    if exclude_self.unwrap_or(false) {
+        let monitor_rect = get_self_rect(&app_handle);
+        let rects = window_layout::compute_layout(
+            session_ids.len(),
+            &layout,
+            &screen,
+            monitor_rect.as_ref(),
+        );
+
+        let home = dirs::home_dir().ok_or("cannot find home dir")?;
+        let store_dir = home.join(".winids");
+        let mut arranged = 0u32;
+        let mut errors = Vec::new();
+
+        for (i, sid) in session_ids.iter().enumerate() {
+            let meta_path = store_dir.join(sid);
+            let meta = match std::fs::read_to_string(&meta_path) {
+                Ok(c) => c,
+                Err(_) => { errors.push(format!("{sid}: no metadata")); continue; }
+            };
+
+            let mut app_name = String::new();
+            let mut win_name = String::new();
+            let mut tty = String::new();
+            for line in meta.lines() {
+                if let Some(v) = line.strip_prefix("app_name=") { app_name = v.trim().to_string(); }
+                if let Some(v) = line.strip_prefix("win_name=") { win_name = v.trim().to_string(); }
+                if let Some(v) = line.strip_prefix("tty=") { tty = v.trim().to_string(); }
+            }
+
+            let rect = &rects[i];
+            let result = if !tty.is_empty() {
+                window_layout::set_terminal_bounds_by_tty(&tty, rect).await
+            } else if !app_name.is_empty() && !win_name.is_empty() {
+                let match_title = if win_name.len() > 30 { &win_name[..30] } else { &win_name };
+                window_layout::set_window_bounds(&app_name, match_title, rect).await
+            } else {
+                Err(format!("{sid}: missing app_name/win_name/tty"))
+            };
+
+            match result {
+                Ok(()) => arranged += 1,
+                Err(e) => errors.push(e),
+            }
+        }
+
+        let msg = if errors.is_empty() {
+            format!("Arranged {arranged} windows ({layout}, monitor fixed)")
+        } else {
+            format!("Arranged {arranged}, {} errors", errors.len())
+        };
+        return Ok(WinidResult { ok: arranged > 0, message: msg });
+    }
+
+    let (total, monitor_idx) = match monitor_slot {
+        Some(idx) => {
+            let total = session_ids.len() + 1;
+            let clamped = idx.min(total - 1);
+            (total, Some(clamped))
+        }
+        None => (session_ids.len(), None),
+    };
+
+    let rects = window_layout::compute_layout(total, &layout, &screen, None);
+
+    // Move agent-monitor itself to its reserved slot
+    if let Some(idx) = monitor_idx {
+        if let Some(rect) = rects.get(idx) {
+            if let Some(win) = app_handle.get_webview_window("main") {
+                let factor = win.scale_factor().unwrap_or(1.0);
+                let _ = win.set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition {
+                        x: (rect.x as f64 * factor) as i32,
+                        y: (rect.y as f64 * factor) as i32,
+                    },
+                ));
+                let _ = win.set_size(tauri::Size::Physical(
+                    tauri::PhysicalSize {
+                        width: (rect.width as f64 * factor) as u32,
+                        height: (rect.height as f64 * factor) as u32,
+                    },
+                ));
+            }
+        }
+    }
 
     let home = dirs::home_dir().ok_or("cannot find home dir")?;
     let store_dir = home.join(".winids");
     let mut arranged = 0u32;
     let mut errors = Vec::new();
+
+    // Build list of rects for agent sessions, skipping the monitor slot
+    let agent_rects: Vec<&window_layout::WindowRect> = rects
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != monitor_idx)
+        .map(|(_, r)| r)
+        .collect();
 
     for (i, sid) in session_ids.iter().enumerate() {
         let meta_path = store_dir.join(sid);
@@ -410,7 +715,7 @@ pub async fn arrange_windows(
             if let Some(v) = line.strip_prefix("tty=") { tty = v.trim().to_string(); }
         }
 
-        let rect = &rects[i];
+        let rect = agent_rects[i];
         let result = if !tty.is_empty() {
             window_layout::set_terminal_bounds_by_tty(&tty, rect).await
         } else if !app_name.is_empty() && !win_name.is_empty() {
@@ -569,4 +874,12 @@ end tell
         Ok(Err(e)) => Err(format!("osascript error: {e}")),
         Err(_) => Err("focus timed out".to_string()),
     }
+}
+
+/// Return the agent-monitor main window's current bounds (logical points).
+#[tauri::command]
+pub fn get_monitor_rect(
+    app_handle: tauri::AppHandle,
+) -> Result<crate::services::window_layout::WindowRect, String> {
+    get_self_rect(&app_handle).ok_or_else(|| "could not read monitor window bounds".to_string())
 }

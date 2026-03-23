@@ -7,6 +7,7 @@ import { matchesCursor, matchesClaudeCode, matchesTerminal } from '../utils/titl
 export function useFilteredItems(): Notice[] {
   const notices = usePanelStore((s) => s.notices)
   const titleFilter = usePanelStore((s) => s.titleFilter)
+  const selectedSessionId = usePanelStore((s) => s.selectedSessionId)
   const selectedGroupId = useProjectStore((s) => s.selectedGroupId)
   const groups = useProjectStore((s) => s.groups)
 
@@ -22,6 +23,11 @@ export function useFilteredItems(): Notice[] {
       filtered = filtered.filter((n) => matchesTerminal(n.title))
     }
 
+    // Session filter: when a sidebar tab is selected, show only that session's notifications
+    if (selectedSessionId) {
+      filtered = filtered.filter((n) => n.action?.trim() === selectedSessionId)
+    }
+
     // Project filter
     if (selectedGroupId) {
       const group = groups.find((g) => g.id === selectedGroupId)
@@ -34,5 +40,5 @@ export function useFilteredItems(): Notice[] {
     }
 
     return filtered
-  }, [notices, titleFilter, selectedGroupId, groups])
+  }, [notices, titleFilter, selectedSessionId, selectedGroupId, groups])
 }

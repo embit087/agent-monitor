@@ -96,6 +96,13 @@ pub struct NotifyPayload {
     pub session_id: Option<String>,
     #[serde(rename = "sessionId")]
     pub session_id_camel: Option<String>,
+    /// TTY device path (e.g. "/dev/ttys003") — used to match incoming
+    /// notifications to an already-discovered session.
+    pub tty: Option<String>,
+    /// If true, skip the macOS system notification banner.
+    /// The notice is still stored and broadcast to the frontend.
+    #[serde(default)]
+    pub silent: bool,
 }
 
 impl NotifyPayload {

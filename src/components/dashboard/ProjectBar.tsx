@@ -3,37 +3,34 @@ import { usePanelStore } from '../../stores/panelStore.ts'
 import { useProjectStore } from '../../stores/projectStore.ts'
 import { useSessionTabs } from '../../hooks/useSessionTabs.ts'
 import { hueToColor, HUE_PALETTE } from '../../utils/colors.ts'
-import { Tooltip } from './Tooltip.tsx'
 
 export function ProjectBar() {
   const groups = useProjectStore((s) => s.groups)
   const selectedGroupId = useProjectStore((s) => s.selectedGroupId)
   const setSelectedGroupId = useProjectStore((s) => s.setSelectedGroupId)
-  const isCreating = useProjectStore((s) => s.isCreating)
-  const setIsCreating = useProjectStore((s) => s.setIsCreating)
-  const createProject = useProjectStore((s) => s.createProject)
   const deleteProject = useProjectStore((s) => s.deleteProject)
   const renameProject = useProjectStore((s) => s.renameProject)
   const setProjectColor = useProjectStore((s) => s.setProjectColor)
+  const moveSessionToProject = useProjectStore((s) => s.moveSessionToProject)
   const toggleSessionInProject = useProjectStore((s) => s.toggleSessionInProject)
   const serverRunning = usePanelStore((s) => s.serverRunning)
-  const notices = usePanelStore((s) => s.notices)
-  const clearNotices = usePanelStore((s) => s.clearNotices)
-  const hideResponses = usePanelStore((s) => s.hideResponses)
-  const toggleHideResponses = usePanelStore((s) => s.toggleHideResponses)
+  const setSelectedSessionId = usePanelStore((s) => s.setSelectedSessionId)
+  const draggingSessionKey = usePanelStore((s) => s.draggingSessionKey)
+  const setDraggingSessionKey = usePanelStore((s) => s.setDraggingSessionKey)
+  const sidebarMode = usePanelStore((s) => s.sidebarMode)
+  const setSidebarMode = usePanelStore((s) => s.setSidebarMode)
   const tabs = useSessionTabs()
 
-  const [newName, setNewName] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [managingId, setManagingId] = useState<string | null>(null)
-  const renameRef = useRef<HTMLInputElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (editingId && renameRef.current) renameRef.current.focus()
+    if (editingId && renameInputRef.current) renameInputRef.current.focus()
   }, [editingId])
 
   // Close manage panel on outside click
@@ -52,14 +49,6 @@ export function ProjectBar() {
     return tabs.filter((t) => group.sessionKeys.includes(t.sessionKey)).length
   }
 
-  const handleCreate = () => {
-    if (newName.trim()) {
-      createProject(newName.trim())
-      setNewName('')
-    }
-    setIsCreating(false)
-  }
-
   const handleRename = (id: string) => {
     if (editName.trim() && editName.trim() !== groups.find((g) => g.id === id)?.name) {
       renameProject(id, editName.trim())
@@ -73,40 +62,10 @@ export function ProjectBar() {
     setManagingId(null)
   }
 
-  // Drag-and-drop handlers
-  const handleDragEnter = (e: React.DragEvent, groupId: string) => {
-    if (e.dataTransfer.types.includes('application/x-session-key')) {
-      e.preventDefault()
-      e.stopPropagation()
-      setDragOver(groupId)
-    }
-  }
-
-  const handleDragOver = (e: React.DragEvent, groupId: string) => {
-    if (e.dataTransfer.types.includes('application/x-session-key')) {
-      e.preventDefault()
-      e.stopPropagation()
-      e.dataTransfer.dropEffect = 'link'
-      setDragOver(groupId)
-    }
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    // Only clear if leaving the chip itself, not a child
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return
-    setDragOver(null)
-  }
-
-  const handleDrop = (e: React.DragEvent, groupId: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragOver(null)
-    const sessionKey = e.dataTransfer.getData('application/x-session-key')
-      || e.dataTransfer.getData('text/plain')
-    if (sessionKey) {
-      toggleSessionInProject(sessionKey, groupId)
-    }
-  }
+  // Clear drag-over highlight when drag ends
+  useEffect(() => {
+    if (!draggingSessionKey) setDragOver(null)
+  }, [draggingSessionKey])
 
   const pendingGroup = pendingDeleteId ? groups.find((g) => g.id === pendingDeleteId) : null
   const managingGroup = managingId ? groups.find((g) => g.id === managingId) : null
@@ -116,14 +75,17 @@ export function ProjectBar() {
       <div className="project-bar">
         <div
           className={`project-chip ${!selectedGroupId ? 'active' : ''}`}
-          onClick={() => setSelectedGroupId(null)}
+          onClick={() => {
+            setSelectedGroupId(null)
+            setSelectedSessionId(null)
+          }}
+          title="Show all sessions"
         >
           All
         </div>
 
         {groups.map((g) => {
           const count = sessionCountForGroup(g)
-          const isEditing = editingId === g.id
           const isDragOver = dragOver === g.id
 
           return (
@@ -131,8 +93,9 @@ export function ProjectBar() {
               key={g.id}
               className={`project-chip ${selectedGroupId === g.id ? 'active' : ''} ${isDragOver ? 'drag-over' : ''}`}
               onClick={() => {
-                if (!isEditing) setSelectedGroupId(selectedGroupId === g.id ? null : g.id)
+                if (!editingId) setSelectedGroupId(selectedGroupId === g.id ? null : g.id)
               }}
+              title="Click to filter · Double-click to rename · Right-click to manage"
               onDoubleClick={(e) => {
                 e.stopPropagation()
                 startRename(g.id, g.name)
@@ -141,10 +104,17 @@ export function ProjectBar() {
                 e.preventDefault()
                 setManagingId(managingId === g.id ? null : g.id)
               }}
-              onDragEnter={(e) => handleDragEnter(e, g.id)}
-              onDragOver={(e) => handleDragOver(e, g.id)}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, g.id)}
+              data-drop-project-id={g.id}
+              onMouseEnter={() => { if (draggingSessionKey) setDragOver(g.id) }}
+              onMouseLeave={() => { if (draggingSessionKey) setDragOver(null) }}
+              onMouseUp={() => {
+                if (draggingSessionKey) {
+                  moveSessionToProject(draggingSessionKey, g.id)
+                  setDragOver(null)
+                  setDraggingSessionKey(null)
+                  document.body.classList.remove('is-session-drag')
+                }
+              }}
               style={
                 isDragOver
                   ? { borderColor: hueToColor(g.colorHue, 50, 60), background: `${hueToColor(g.colorHue, 30, 20)}33` }
@@ -155,92 +125,35 @@ export function ProjectBar() {
             >
               <span className="dot" style={{ background: hueToColor(g.colorHue, 45, 55) }} />
 
-              {isEditing ? (
-                <input
-                  ref={renameRef}
-                  className="project-rename-input"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleRename(g.id)
-                    if (e.key === 'Escape') setEditingId(null)
-                    e.stopPropagation()
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  onBlur={() => handleRename(g.id)}
-                />
-              ) : (
-                <span className="project-chip-name">{g.name}</span>
-              )}
+              <span className="project-chip-name">{g.name}</span>
 
-              {count > 0 && !isEditing && (
+              {count > 0 && (
                 <span className="count" style={{ background: hueToColor(g.colorHue, 30, 25) }}>
                   {count}
                 </span>
               )}
 
-              {!isEditing && (
-                <button
-                  className="project-delete-btn"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setPendingDeleteId(g.id)
-                  }}
-                  title="Delete project"
-                >
-                  ×
-                </button>
-              )}
+              <button
+                className="project-delete-btn"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setPendingDeleteId(g.id)
+                }}
+                title="Delete project"
+              >
+                ×
+              </button>
             </div>
           )
         })}
 
-        {isCreating ? (
-          <div className="project-create-input">
-            <input
-              autoFocus
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCreate()
-                if (e.key === 'Escape') { setIsCreating(false); setNewName('') }
-              }}
-              placeholder="Project name"
-            />
-            <button className="icon-btn" onClick={handleCreate} title="Create">
-              +
-            </button>
-          </div>
-        ) : (
-          <button className="create-btn" onClick={() => setIsCreating(true)} title="New project">
-            +
-          </button>
-        )}
+        <button className="create-btn" onClick={() => setSidebarMode(sidebarMode === 'project' ? 'monitor' : 'project')} title="New project">
+          +
+        </button>
 
         <div style={{ flex: 1 }} />
 
-        <span className={`status-dot ${serverRunning ? 'running' : 'starting'}`} />
-
-        <Tooltip text="Show only user prompts; hide AI responses" position="bottom">
-          <button
-            type="button"
-            className={`text-btn ${hideResponses ? 'active' : ''}`}
-            onClick={() => toggleHideResponses()}
-          >
-            User only
-          </button>
-        </Tooltip>
-
-        {notices.length > 0 && (
-          <button
-            className="text-btn"
-            onClick={() => {
-              if (confirm('Clear all notifications?')) clearNotices()
-            }}
-          >
-            Clear
-          </button>
-        )}
+        <span className={`status-dot ${serverRunning ? 'running' : 'starting'}`} title={serverRunning ? 'Server running' : 'Server starting...'} />
 
         <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>v0.1.0</span>
       </div>
@@ -256,6 +169,7 @@ export function ProjectBar() {
           <button
             className="project-manage-action"
             onClick={() => startRename(managingGroup.id, managingGroup.name)}
+            title="Rename this project"
           >
             Rename
           </button>
@@ -300,9 +214,44 @@ export function ProjectBar() {
               setPendingDeleteId(managingGroup.id)
               setManagingId(null)
             }}
+            title="Delete this project permanently"
           >
             Delete Project
           </button>
+        </div>
+      )}
+
+      {/* Delete confirmation dialog */}
+      {/* Rename modal */}
+      {editingId && (
+        <div className="confirm-overlay" onClick={() => setEditingId(null)}>
+          <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>Rename project</h3>
+            <input
+              ref={renameInputRef}
+              className="rename-modal-input"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRename(editingId)
+                if (e.key === 'Escape') setEditingId(null)
+              }}
+              placeholder="Project name"
+            />
+            <div className="confirm-actions">
+              <button className="cancel-btn" onClick={() => setEditingId(null)} title="Cancel rename">
+                Cancel
+              </button>
+              <button
+                className="confirm-btn"
+                onClick={() => handleRename(editingId)}
+                disabled={!editName.trim()}
+                title="Confirm rename"
+              >
+                Rename
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -315,7 +264,7 @@ export function ProjectBar() {
               Sessions assigned to this project will be unlinked but not removed.
             </p>
             <div className="confirm-actions">
-              <button className="cancel-btn" onClick={() => setPendingDeleteId(null)}>
+              <button className="cancel-btn" onClick={() => setPendingDeleteId(null)} title="Cancel deletion">
                 Cancel
               </button>
               <button
@@ -325,6 +274,7 @@ export function ProjectBar() {
                   if (selectedGroupId === pendingDeleteId) setSelectedGroupId(null)
                   setPendingDeleteId(null)
                 }}
+                title="Delete project permanently"
               >
                 Delete
               </button>

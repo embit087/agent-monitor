@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Send, Eye, FolderPlus, X, Image } from 'lucide-react'
 import { usePanelStore } from '../../stores/panelStore.ts'
+import { Tooltip } from './Tooltip.tsx'
 import { useProjectStore } from '../../stores/projectStore.ts'
 import { useSessionTabs, type SessionTab } from '../../hooks/useSessionTabs.ts'
 import { shortSessionId } from '../../utils/formatting.ts'
@@ -15,6 +16,10 @@ export function ChatInput() {
   const capturePreview = usePanelStore((s) => s.capturePreview)
   const previewImage = usePanelStore((s) => s.previewImage)
   const previewSessionId = usePanelStore((s) => s.previewSessionId)
+  const notices = usePanelStore((s) => s.notices)
+  const clearNotices = usePanelStore((s) => s.clearNotices)
+  const hideResponses = usePanelStore((s) => s.hideResponses)
+  const toggleHideResponses = usePanelStore((s) => s.toggleHideResponses)
 
   const groups = useProjectStore((s) => s.groups)
   const groupsContaining = useProjectStore((s) => s.groupsContaining)
@@ -136,16 +141,40 @@ export function ChatInput() {
             <h3>Close session #{activeTab.index}?</h3>
             <p>All notifications for this session will be removed and its WINID unregistered.</p>
             <div className="confirm-actions">
-              <button className="cancel-btn" onClick={() => setPendingClose(false)}>Cancel</button>
+              <button className="cancel-btn" onClick={() => setPendingClose(false)} title="Cancel and keep session">Cancel</button>
               <button className="danger-btn" onClick={() => {
                 closeWinidSession(activeTab.sessionKey)
                 setSelectedSessionId(null)
                 setPendingClose(false)
-              }}>Close Session</button>
+              }} title="Close session and remove notifications">Close Session</button>
             </div>
           </div>
         </div>
       )}
+
+      <div className="chat-input-actions">
+        <Tooltip text="Show only user prompts; hide AI responses" position="top">
+          <button
+            type="button"
+            className={`text-btn text-btn-sm ${hideResponses ? 'active' : ''}`}
+            onClick={() => toggleHideResponses()}
+          >
+            User only
+          </button>
+        </Tooltip>
+
+        {notices.length > 0 && (
+          <button
+            className="text-btn text-btn-sm"
+            onClick={() => {
+              if (confirm('Clear all notifications?')) clearNotices()
+            }}
+            title="Clear all notifications"
+          >
+            Clear
+          </button>
+        )}
+      </div>
 
       <div className="chat-input-field">
         <textarea

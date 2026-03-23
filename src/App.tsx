@@ -10,7 +10,10 @@ import { ErrorBanner } from './components/dashboard/ErrorBanner.tsx'
 import { AgentCardList } from './components/dashboard/AgentCardList.tsx'
 import { ChatInput } from './components/dashboard/ChatInput.tsx'
 import { ProjectManagePanel } from './components/dashboard/ProjectManagePanel.tsx'
+import { SettingsPanel } from './components/dashboard/SettingsPanel.tsx'
 import { ProjectDropOverlay } from './components/dashboard/ProjectDropOverlay.tsx'
+import { LayoutOverlay } from './components/dashboard/LayoutOverlay.tsx'
+import { HighlightOverlay } from './components/dashboard/HighlightOverlay.tsx'
 import './App.css'
 
 function Dashboard() {
@@ -20,6 +23,7 @@ function Dashboard() {
   const sidebarMode = usePanelStore(s => s.sidebarMode)
   const lastError = usePanelStore(s => s.lastError)
   const fetchProjects = useProjectStore(s => s.fetchProjects)
+  const draggingSessionKey = usePanelStore(s => s.draggingSessionKey)
 
   useTauriEvents()
 
@@ -32,13 +36,15 @@ function Dashboard() {
 
   const isTab = sidebarMode === 'tab'
   const isProject = sidebarMode === 'project'
+  const isSettings = sidebarMode === 'settings'
 
   return (
     <div className={`dashboard ${isTab ? 'tab-mode' : ''}`}>
+      <div className="titlebar-drag" data-tauri-drag-region style={draggingSessionKey ? { pointerEvents: 'none' } : undefined} />
       <AgentSessionTabBar />
       <div className="dashboard-right">
         <SwitchStatusBar />
-        {!isTab && !isProject && (
+        {!isTab && !isProject && !isSettings && (
           <div className="dashboard-topbar">
             <ProjectBar />
             <TerminalWinidBar />
@@ -53,6 +59,7 @@ function Dashboard() {
           </div>
         )}
         {isProject && <ProjectManagePanel />}
+        {sidebarMode === 'settings' && <SettingsPanel />}
       </div>
     </div>
   )
@@ -72,6 +79,12 @@ function App() {
   const path = window.location.pathname
   if (path === '/notepad') {
     return <NotepadWindow />
+  }
+  if (path === '/overlay') {
+    return <LayoutOverlay />
+  }
+  if (path === '/highlight') {
+    return <HighlightOverlay />
   }
   return <Dashboard />
 }

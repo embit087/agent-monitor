@@ -1,8 +1,8 @@
 use crate::models::notice::Notice;
 use crate::models::pad::Pad;
-use crate::models::project::ProjectGroup;
 use crate::models::audit::AuditLog;
 use crate::services::winid_locator;
+use crate::services::project_db::ProjectDb;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -11,7 +11,7 @@ pub struct AppState {
     pub notices: Vec<Notice>,
     pub pads: Vec<Pad>,
     pub active_pad_id: Option<uuid::Uuid>,
-    pub projects: Vec<ProjectGroup>,
+    pub project_db: ProjectDb,
     pub server_running: bool,
     pub port: u16,
     pub max_items: usize,
@@ -69,13 +69,13 @@ impl AppState {
             .map(|s| matches!(s.to_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
-        let projects = ProjectGroup::load_from_disk().unwrap_or_default();
+        let project_db = ProjectDb::new();
 
         Self {
             notices: Vec::new(),
             pads: Vec::new(),
             active_pad_id: None,
-            projects,
+            project_db,
             server_running: false,
             port,
             max_items,

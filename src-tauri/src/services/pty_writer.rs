@@ -9,8 +9,10 @@ use tokio::process::Command;
 ///    key code is more reliable)
 fn build_keystroke_script(text: &str, source_kind: &str) -> String {
     match source_kind {
-        "cursor" => {
-            // For Cursor (Electron): use clipboard paste then Cmd+Enter via key code 36
+        "cursor" | "claudeCode" => {
+            // Clipboard paste then Cmd+Enter via key code 36
+            // Cursor is Electron, Claude Code is terminal — both benefit from
+            // clipboard paste (reliable for long/special text) + Cmd+Enter.
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
             format!(
                 r#"set the clipboard to "{escaped}"
@@ -22,7 +24,7 @@ end tell"#
             )
         }
         _ => {
-            // For terminal apps: keystroke + Enter
+            // For plain terminal sessions: keystroke + Enter
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
             format!(
                 r#"tell application "System Events"

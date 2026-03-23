@@ -30,11 +30,31 @@ function renderWithImages(text: string) {
 
 export function AgentCard({ notice }: { notice: Notice }) {
   const selectedSessionId = usePanelStore((s) => s.selectedSessionId)
+  const setSelectedSessionId = usePanelStore((s) => s.setSelectedSessionId)
   const hideResponses = usePanelStore((s) => s.hideResponses)
 
-  const highlighted = notice.action && notice.action.trim() === selectedSessionId
+  const sessionKey = notice.action?.trim() || null
+  const highlighted = sessionKey === selectedSessionId
+
+  const handleClick = () => {
+    if (!sessionKey) return
+    setSelectedSessionId(selectedSessionId === sessionKey ? null : sessionKey)
+  }
   const displayResponse = notice.summary || notice.body
   const showRequest = notice.request && notice.request !== displayResponse
+
+  // Compact event-style rendering for short, single-line system notifications
+  const isCompact = !showRequest && displayResponse &&
+    !displayResponse.includes('\n') && displayResponse.length < 250
+
+  if (isCompact) {
+    return (
+      <div className={`chat-event ${highlighted ? 'highlighted' : ''} ${sessionKey ? 'clickable' : ''}`} onClick={handleClick}>
+        <span className="chat-event-text">{displayResponse}</span>
+        <span className="chat-event-time">{formatDate(notice.at)}</span>
+      </div>
+    )
+  }
 
   const messageClass = [
     'chat-message',
@@ -43,9 +63,12 @@ export function AgentCard({ notice }: { notice: Notice }) {
   ].filter(Boolean).join(' ')
 
   return (
-    <div className={messageClass}>
+    <div className={messageClass} onClick={handleClick} style={sessionKey ? { cursor: 'pointer' } : undefined}>
       <div className="chat-message-header">
         <span className="chat-timestamp">{formatDate(notice.at)}</span>
+        {displayResponse && (
+          <CopyButton text={displayResponse} className="copy-btn chat-header-copy" label="Copy" />
+        )}
       </div>
 
       {showRequest ? (
@@ -67,9 +90,6 @@ export function AgentCard({ notice }: { notice: Notice }) {
               <InlineImage key={i} filePath={part.path} />
             )
           )}
-          <div className="chat-copy-footer">
-            <CopyButton text={displayResponse} className="copy-btn" label="Copy" />
-          </div>
         </div>
       )}
     </div>

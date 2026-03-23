@@ -7,3 +7,4 @@ pub mod window_capture;
 pub mod pty_writer;
 pub mod session_discover;
 pub mod window_layout;
+pub mod project_db;

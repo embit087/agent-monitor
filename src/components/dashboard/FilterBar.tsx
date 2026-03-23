@@ -10,7 +10,7 @@ export function FilterBar() {
 
   return (
     <div className="filter-bar">
-      <span className={`status-dot ${serverRunning ? 'running' : 'starting'}`} />
+      <span className={`status-dot ${serverRunning ? 'running' : 'starting'}`} title={serverRunning ? 'Server running' : 'Server starting...'} />
 
       <div style={{ flex: 1 }} />
 
@@ -30,6 +30,7 @@ export function FilterBar() {
           onClick={() => {
             if (confirm('Clear all notifications?')) clearNotices()
           }}
+          title="Clear all notifications"
         >
           Clear
         </button>

@@ -133,6 +133,9 @@ if src:
 a = (os.environ.get("ACTION") or "").strip()
 if a:
     p["action"] = a
+silent = (os.environ.get("NOTIFY_MAILBOX_SILENT") or "").strip().lower() in ("1", "true", "yes")
+if silent:
+    p["silent"] = True
 if isinstance(ctx, dict):
     summary = (ctx.get("summary") or "").strip()
     if summary:

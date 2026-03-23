@@ -1,6 +1,6 @@
 import { matchesCursor, matchesClaudeCode, matchesTerminal } from './titleFilters.ts'
 
-export type SourceKind = 'cursor' | 'claudeCode' | 'terminal' | 'other'
+export type SourceKind = 'cursor' | 'claudeCode' | 'terminal' | 'ghostty' | 'other'
 
 export function getSourceKind(title: string): SourceKind {
   if (matchesCursor(title)) return 'cursor'
@@ -13,6 +13,7 @@ export const SOURCE_COLORS: Record<SourceKind, string> = {
   cursor: 'hsl(270, 25%, 65%)',
   claudeCode: 'hsl(162, 25%, 60%)',
   terminal: 'hsl(30, 90%, 55%)',
+  ghostty: 'hsl(200, 50%, 60%)',
   other: 'hsl(0, 0%, 55%)',
 }
 

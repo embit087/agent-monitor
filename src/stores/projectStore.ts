@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
-import type { ProjectGroup } from '../types/project.ts'
+import type { ProjectGroup, ProjectStatus } from '../types/project.ts'
 
 interface ProjectState {
   groups: ProjectGroup[]
@@ -13,10 +13,15 @@ interface ProjectState {
   renameProject: (id: string, name: string) => Promise<void>
   deleteProject: (id: string) => Promise<void>
   setProjectColor: (id: string, hue: number) => Promise<void>
+  updateDescription: (id: string, description: string) => Promise<void>
+  updateDirectory: (id: string, directory: string) => Promise<void>
+  setStatus: (id: string, status: ProjectStatus) => Promise<void>
   toggleSessionInProject: (sessionKey: string, groupId: string) => Promise<void>
+  moveSessionToProject: (sessionKey: string, projectId: string | null) => Promise<void>
   setSelectedGroupId: (id: string | null) => void
   setIsCreating: (creating: boolean) => void
   setEditingGroupId: (id: string | null) => void
+  selectedProjectDirectory: () => string | null
   groupsContaining: (sessionKey: string) => ProjectGroup[]
   matchesSelectedProject: (sessionKey: string) => boolean
 }
@@ -80,6 +85,43 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
+  updateDescription: async (id, description) => {
+    try {
+      await invoke('update_project_description', { id, description })
+      set((s) => ({
+        groups: s.groups.map((g) =>
+          g.id === id ? { ...g, description: description.trim() || null } : g
+        ),
+      }))
+    } catch (e) {
+      console.error('Failed to update description:', e)
+    }
+  },
+
+  updateDirectory: async (id, directory) => {
+    try {
+      await invoke('update_project_directory', { id, directory })
+      set((s) => ({
+        groups: s.groups.map((g) =>
+          g.id === id ? { ...g, directory: directory.trim() || null } : g
+        ),
+      }))
+    } catch (e) {
+      console.error('Failed to update directory:', e)
+    }
+  },
+
+  setStatus: async (id, status) => {
+    try {
+      await invoke('set_project_status', { id, status })
+      set((s) => ({
+        groups: s.groups.map((g) => (g.id === id ? { ...g, status } : g)),
+      }))
+    } catch (e) {
+      console.error('Failed to set status:', e)
+    }
+  },
+
   toggleSessionInProject: async (sessionKey, groupId) => {
     try {
       await invoke('toggle_session_in_project', { sessionKey, groupId })
@@ -89,12 +131,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
+  moveSessionToProject: async (sessionKey, projectId) => {
+    try {
+      await invoke('move_session_to_project', { sessionKey, projectId })
+      await get().fetchProjects()
+    } catch (e) {
+      console.error('Failed to move session:', e)
+    }
+  },
+
   setSelectedGroupId: (id) => set({ selectedGroupId: id }),
   setIsCreating: (creating) => set({ isCreating: creating }),
   setEditingGroupId: (id) => set({ editingGroupId: id }),
 
   groupsContaining: (sessionKey) => {
     return get().groups.filter((g) => g.sessionKeys.includes(sessionKey))
+  },
+
+  selectedProjectDirectory: () => {
+    const { selectedGroupId, groups } = get()
+    if (!selectedGroupId) return null
+    const group = groups.find((g) => g.id === selectedGroupId)
+    return group?.directory ?? null
   },
 
   matchesSelectedProject: (sessionKey) => {

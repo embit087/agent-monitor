@@ -113,7 +113,58 @@ async fn post_notify(
         }
     };
 
+    let silent = payload.silent;
+    let tty = payload.tty.clone();
     let notice = payload.into_notice();
+
+    // Reconcile: if the notice's action doesn't match a known session,
+    // try to find a discovered/manual session with the same TTY.
+    // The notification's session key (from the agent) takes priority:
+    // rewrite all existing notices under the old discovered key to the
+    // agent's key, and move the winid metadata so switching still works.
+    if let Some(ref tty_val) = tty {
+        let tty_trimmed = tty_val.trim();
+        if !tty_trimmed.is_empty() {
+            let current_action = notice.action.as_deref().map(|a| a.trim()).unwrap_or("");
+            if !current_action.is_empty() {
+                let active_keys: std::collections::HashSet<String> = {
+                    let s = state.app.read().await;
+                    s.notices
+                        .iter()
+                        .filter_map(|n| n.action.as_ref().map(|a| a.trim().to_string()))
+                        .filter(|k| !k.is_empty())
+                        .collect()
+                };
+
+                if !active_keys.contains(current_action) {
+                    if let Some(matched_key) = find_session_by_tty(&active_keys, tty_trimmed) {
+                        // The agent's key is new — absorb the discovered session into it.
+                        // 1. Rewrite existing notices from old key → new key
+                        let new_key = current_action.to_string();
+                        {
+                            let mut s = state.app.write().await;
+                            for n in &mut s.notices {
+                                if n.action.as_deref().map(|a| a.trim()) == Some(matched_key.as_str()) {
+                                    n.action = Some(new_key.clone());
+                                }
+                            }
+                        }
+                        // 2. Move winid metadata: copy old file to new key, remove old
+                        if let Some(home) = dirs::home_dir() {
+                            let store_dir = home.join(".winids");
+                            let old_path = store_dir.join(&matched_key);
+                            let new_path = store_dir.join(&new_key);
+                            if old_path.exists() && !new_path.exists() {
+                                let _ = std::fs::copy(&old_path, &new_path);
+                            }
+                            let _ = std::fs::remove_file(&old_path);
+                        }
+                        // Keep notice.action as-is (the agent's session key)
+                    }
+                }
+            }
+        }
+    }
 
     {
         let mut s = state.app.write().await;
@@ -142,8 +193,8 @@ async fn post_notify(
     // Emit Tauri event for frontend
     let _ = state.app_handle.emit("notice:new", &notice);
 
-    // System notification
-    {
+    // System notification (skipped when the sender sets silent=true)
+    if !silent {
         let s = state.app.read().await;
         system_notify::post_notice(&notice, s.no_system_notify);
     }
@@ -221,6 +272,25 @@ async fn ws_upgrade(
 }
 
 use tokio::sync::broadcast;
+
+/// Look up a session key by matching TTY in ~/.winids/ metadata files.
+fn find_session_by_tty(active_keys: &std::collections::HashSet<String>, tty: &str) -> Option<String> {
+    let store_dir = dirs::home_dir()?.join(".winids");
+
+    for key in active_keys {
+        let meta_path = store_dir.join(key);
+        if let Ok(contents) = std::fs::read_to_string(&meta_path) {
+            for line in contents.lines() {
+                if let Some(stored_tty) = line.strip_prefix("tty=") {
+                    if stored_tty.trim() == tty {
+                        return Some(key.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
 
 // Notepad routes
 
