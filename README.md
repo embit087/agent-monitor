@@ -11,6 +11,12 @@
 
 ---
 
+<p align="center">
+  <img src="demo.gif" width="600" alt="Agent Monitor Demo" />
+</p>
+
+---
+
 ## The Problem
 
 You opened one terminal with Claude Code. Cool, manageable, life is good.
