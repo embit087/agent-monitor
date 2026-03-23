@@ -15,6 +15,11 @@
 .dashboard.tab-mode .dashboard-right {
   display: none;
 }
+.dashboard.tab-mode .session-sidebar {
+  width: auto;
+  min-width: 0;
+  flex: 1;
+}
 .dashboard-topbar {
   display: flex;
   flex-direction: column;
